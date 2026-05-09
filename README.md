@@ -362,3 +362,23 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Der erste `Leer`/Neue-Datei-Start baut den Baumadapter nach dem Ersetzen des Dokuments neu auf, löscht sichtbare alte Baumzeilen und setzt RTF-/Titel-Felder leer zurück.
 - Speichern-vorher läuft bei SAF-`Speichern unter` und FTP-Speichern nach erfolgreichem Speichern automatisch mit der geplanten Aktion weiter.
 - ALX-Baumzustand bleibt weiterhin über `isexpanded="True/False"` je Knoten gespeichert und wird beim Laden rekursiv wiederhergestellt.
+
+## v104
+
+- Version erhöht auf `versionCode 104` / `versionName 1.0.104-java-android-nativ`.
+- Zwei-Finger-Zoom im RTF-Editor ergänzt: markierter Text wird in kleinen Schriftgrößenstufen größer/kleiner; ohne Markierung wird der gesamte RTF-Text skaliert.
+- Zwei-Finger-Zoom in der Baumliste ergänzt: der selektierte Baumknoten bekommt eine größere/kleinere gespeicherte Baum-Schriftgröße.
+- Die quadratischen Icon-Buttons der drei oberen Leisten lassen sich per Zwei-Finger-Geste in kleinen Schritten von der jetzigen Größe bis etwa zur doppelten Breite/Höhe vergrößern und wieder verkleinern; die Größe bleibt in der Android-Config erhalten.
+- Die beiden hellgelben Überschriftfelder über Baum und RTF-Box bekommen eine eigene per Zwei-Finger-Geste zoombare Textgröße; auch diese Einstellung wird gespeichert.
+- Große Bilder werden beim Einfügen für RTF speicherschonend dekodiert, bei Bedarf auf eine sichere Kantenlänge reduziert und als JPEG in stabiler Maximalgröße eingebettet.
+- Vorhandene große RTF-Bilder werden für die Anzeige mit Downsampling dekodiert, damit mehr-MB-Bilder nicht mehr durch vollständiges Bitmap-Dekodieren abstürzen.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
+
+
+## v105
+
+- Version erhöht auf `versionCode 105` / `versionName 1.0.105-java-android-nativ`.
+- Der Zwei-Finger-Zoom der drei oberen Icon-Leisten wurde stabilisiert: Die gesamte Fläche der drei Leisten ist nun ein gemeinsames Gestenziel.
+- Die einzelnen Toolbar-Buttons bekommen keine konkurrierenden Toolbar-Zoom-Touchlistener mehr; dadurch können Gesten über mehrere Buttons/Reihen hinweg erkannt werden.
+- Toolbar-Größenänderungen werden gebündelt und Config-Speichern wird verzögert ausgeführt, damit beim Spreizen/Kneifen kein UI-Stau/ANR entsteht.
+- Schutz gegen fehlerhafte Android-Touchereignisse ergänzt: ScaleGestureDetector-Ausnahmen werden abgefangen, statt die App zu beenden.

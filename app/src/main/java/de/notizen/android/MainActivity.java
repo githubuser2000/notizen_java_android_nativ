@@ -52,7 +52,9 @@ import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.AdapterView;
 import android.widget.Button;
@@ -127,6 +129,7 @@ import de.notizen.android.core.LegacyDocumentLifecycle;
 import de.notizen.android.core.LegacyTreeCreation;
 import de.notizen.android.core.LegacyDesktopNoteTrayRegistry;
 import de.notizen.android.core.LegacyTraySelectionModel;
+import de.notizen.android.core.LegacyTouchZoomModel;
 import de.notizen.android.core.LegacyAppDataConfigPath;
 import de.notizen.android.core.LegacyClipboardFormatModel;
 import de.notizen.android.core.LegacyCloseResetModel;
@@ -184,19 +187,27 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.103-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.105-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
     private static final String NODE_TITLE_SIZE_ATTR = "androidTitleSizeSp";
 
-    private static final int TOOLBAR_BUTTON_DP = 24;
+    private static final int DEFAULT_TOOLBAR_BUTTON_DP = LegacyTouchZoomModel.DEFAULT_TOOLBAR_BUTTON_DP;
     private static final int TOOLBAR_BUTTON_MARGIN_DP = 1;
+    private static final float DEFAULT_HEADER_TEXT_SP = LegacyTouchZoomModel.DEFAULT_HEADER_TEXT_SP;
+    private static final float PINCH_STEP_FACTOR = 1.12f;
+    private static final int PINCH_MAX_STEPS_PER_EVENT = 4;
     private static final int TREE_PANE_DEFAULT_DP = 280;
     private static final int TREE_PANE_MIN_DP = 24;
     private static final int EDITOR_PANE_MIN_DP = 56;
     private static final int CONTENT_HEADER_DP = 34;
+    private static final int MAX_IMAGE_DISPLAY_LONG_EDGE_PX = 1600;
+    private static final int MAX_EMBED_IMAGE_LONG_EDGE_PX = LegacyTouchZoomModel.MAX_EMBED_IMAGE_LONG_EDGE_PX;
+    private static final int MAX_EMBEDDED_IMAGE_BYTES = LegacyTouchZoomModel.MAX_EMBEDDED_IMAGE_BYTES;
+    private static final int IMAGE_JPEG_QUALITY = 82;
     private static final long RUNTIME_SNAPSHOT_DELAY_MS = 700L;
+    private static final long UI_ZOOM_SAVE_DELAY_MS = 450L;
     private static final String RUNTIME_SNAPSHOT_FILE = "notizen.runtime-snapshot.xml";
     private static final String RUNTIME_SNAPSHOT_META_FILE = "notizen.runtime-snapshot.meta";
 
@@ -245,6 +256,8 @@ public final class MainActivity extends Activity {
     private WebView pendingPrintView;
     private Runnable autosaveRunnable;
     private Runnable runtimeSnapshotRunnable;
+    private Runnable androidUiZoomSaveRunnable;
+    private boolean toolbarButtonSizeApplyScheduled = false;
     private Thread.UncaughtExceptionHandler previousUncaughtExceptionHandler;
     private boolean autosaveInFlight = false;
     private boolean runtimeSnapshotRestored = false;
@@ -254,12 +267,23 @@ public final class MainActivity extends Activity {
     private boolean titleDirty = false;
     private boolean editorHorizontallyScrolling = false;
     private int treePaneWidthDp = TREE_PANE_DEFAULT_DP;
+    private int toolbarButtonDp = DEFAULT_TOOLBAR_BUTTON_DP;
+    private float headerTextSp = DEFAULT_HEADER_TEXT_SP;
     private FormatTarget lastFormatTarget = FormatTarget.RTF_EDITOR;
     private ActivePane lastActivePane = ActivePane.RTF_EDITOR;
     private LinearLayout contentLayout;
     private LinearLayout treePane;
     private LinearLayout editorPane;
     private View paneDivider;
+    private final ArrayList<TextView> toolbarSquareViews = new ArrayList<>();
+    private ScaleGestureDetector editorScaleDetector;
+    private ScaleGestureDetector treeScaleDetector;
+    private ScaleGestureDetector toolbarScaleDetector;
+    private ScaleGestureDetector headerScaleDetector;
+    private boolean editorPinchActive = false;
+    private boolean treePinchActive = false;
+    private boolean toolbarPinchActive = false;
+    private boolean headerPinchActive = false;
 
     private interface PasswordCallback { void onPassword(String password); }
     private interface ContinueCallback { void run(); }
@@ -284,8 +308,39 @@ public final class MainActivity extends Activity {
         int selectionStart;
         int selectionEnd;
         int treePaneWidthDp;
+        int toolbarButtonDp;
+        float headerTextSp;
         FormatTarget lastFormatTarget;
         ActivePane lastActivePane;
+    }
+
+    /**
+     * Own dispatching container for the three icon rows.
+     * A normal OnTouchListener on the buttons only sees gestures that start on
+     * one concrete child view.  The toolbar zoom must see the whole surface,
+     * including gestures spanning two rows or empty space between icons.
+     */
+    private final class ToolbarZoomLayout extends LinearLayout {
+        private boolean cancelSentToChildren = false;
+
+        ToolbarZoomLayout(Context context) {
+            super(context);
+        }
+
+        @Override public boolean dispatchTouchEvent(MotionEvent event) {
+            boolean consumeForZoom = handleToolbarPinchTouch(event);
+            int action = event == null ? MotionEvent.ACTION_CANCEL : event.getActionMasked();
+            if (consumeForZoom && !cancelSentToChildren && action != MotionEvent.ACTION_DOWN) {
+                MotionEvent cancel = MotionEvent.obtain(event);
+                cancel.setAction(MotionEvent.ACTION_CANCEL);
+                super.dispatchTouchEvent(cancel);
+                cancel.recycle();
+                cancelSentToChildren = true;
+            }
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) cancelSentToChildren = false;
+            if (consumeForZoom) return true;
+            return super.dispatchTouchEvent(event);
+        }
     }
 
     private static final class RtfTypefaceSpan extends TypefaceSpan {
@@ -321,6 +376,28 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private static final class PreparedImage {
+        final byte[] bytes;
+        final String mimeType;
+        final String note;
+        PreparedImage(byte[] bytes, String mimeType, String note) {
+            this.bytes = bytes == null ? new byte[0] : bytes;
+            this.mimeType = mimeType == null ? "" : mimeType;
+            this.note = note == null ? "" : note;
+        }
+    }
+
+    private static final class SizeRun {
+        final int start;
+        final int end;
+        final int size;
+        SizeRun(int start, int end, int size) {
+            this.start = start;
+            this.end = end;
+            this.size = size;
+        }
+    }
+
     private static String androidTypefaceFamily(String family) {
         String clean = LegacyRichTextToolbar.normalizeFontFamily(family).toLowerCase(Locale.ROOT);
         if (clean.contains("courier") || clean.contains("consolas") || clean.contains("mono")) return "monospace";
@@ -349,9 +426,13 @@ public final class MainActivity extends Activity {
             lastFormatTarget = retained.lastFormatTarget == null ? FormatTarget.RTF_EDITOR : retained.lastFormatTarget;
             lastActivePane = retained.lastActivePane == null ? (lastFormatTarget == FormatTarget.TREE_NODE ? ActivePane.TREE_NODE : ActivePane.RTF_EDITOR) : retained.lastActivePane;
             treePaneWidthDp = retained.treePaneWidthDp > 0 ? LegacySettings.normalizeAndroidTreePaneWidthDp(retained.treePaneWidthDp) : LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
+            toolbarButtonDp = retained.toolbarButtonDp > 0 ? LegacySettings.normalizeAndroidToolbarButtonDp(retained.toolbarButtonDp) : LegacySettings.normalizeAndroidToolbarButtonDp(settings.androidToolbarButtonDp);
+            headerTextSp = retained.headerTextSp > 0f ? LegacySettings.normalizeAndroidHeaderTextSp(retained.headerTextSp) : LegacySettings.normalizeAndroidHeaderTextSp(settings.androidHeaderTextSp);
         } else {
             settings = AndroidSettingsStore.load(this);
             treePaneWidthDp = LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
+            toolbarButtonDp = LegacySettings.normalizeAndroidToolbarButtonDp(settings.androidToolbarButtonDp);
+            headerTextSp = LegacySettings.normalizeAndroidHeaderTextSp(settings.androidHeaderTextSp);
             if (!hasOpenIntent) runtimeSnapshotRestored = restoreRuntimeSnapshotIfPresent();
         }
         ioExecutor = Executors.newSingleThreadExecutor();
@@ -395,25 +476,31 @@ public final class MainActivity extends Activity {
         retained.selectionStart = editor == null ? 0 : Math.max(0, editor.getSelectionStart());
         retained.selectionEnd = editor == null ? retained.selectionStart : Math.max(retained.selectionStart, editor.getSelectionEnd());
         retained.treePaneWidthDp = currentTreePaneWidthDp();
+        retained.toolbarButtonDp = toolbarButtonDp;
+        retained.headerTextSp = headerTextSp;
         retained.lastFormatTarget = lastFormatTarget;
         retained.lastActivePane = lastActivePane;
         return retained;
     }
 
     @Override protected void onPause() {
+        flushAndroidUiZoomSettingsNow();
         saveRuntimeSnapshotNow(true);
         super.onPause();
     }
 
     @Override protected void onStop() {
+        flushAndroidUiZoomSettingsNow();
         saveRuntimeSnapshotNow(true);
         super.onStop();
     }
 
     @Override protected void onDestroy() {
+        flushAndroidUiZoomSettingsNow();
         saveRuntimeSnapshotNow(true);
         if (mainHandler != null && autosaveRunnable != null) mainHandler.removeCallbacks(autosaveRunnable);
         if (mainHandler != null && runtimeSnapshotRunnable != null) mainHandler.removeCallbacks(runtimeSnapshotRunnable);
+        if (mainHandler != null && androidUiZoomSaveRunnable != null) mainHandler.removeCallbacks(androidUiZoomSaveRunnable);
         if (previousUncaughtExceptionHandler != null) Thread.setDefaultUncaughtExceptionHandler(previousUncaughtExceptionHandler);
         if (ioExecutor != null) ioExecutor.shutdownNow();
         super.onDestroy();
@@ -426,11 +513,14 @@ public final class MainActivity extends Activity {
     }
 
     private void buildUi() {
+        toolbarSquareViews.clear();
+        initPinchGestureDetectors();
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.rgb(250, 250, 250));
 
-        LinearLayout toolbarPanel = new LinearLayout(this);
+        ToolbarZoomLayout toolbarPanel = new ToolbarZoomLayout(this);
         toolbarPanel.setOrientation(LinearLayout.VERTICAL);
         toolbarPanel.setPadding(dp(4), dp(1), dp(4), dp(2));
         toolbarPanel.setBackgroundColor(Color.rgb(246, 248, 252));
@@ -539,7 +629,11 @@ public final class MainActivity extends Activity {
         rootTitleView.setBackground(roundedBackground(Color.rgb(255, 250, 205), Color.rgb(226, 213, 145), 8));
         rootTitleView.setTextColor(Color.rgb(30, 30, 30));
         rootTitleView.setPadding(dp(7), 0, dp(7), 0);
-        rootTitleView.setTextSize(14f);
+        rootTitleView.setTextSize(headerTextSp);
+        rootTitleView.setOnTouchListener((view, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setActivePane(ActivePane.TREE_NODE);
+            return handleHeaderPinchTouch(event);
+        });
         left.addView(rootTitleView, new LinearLayout.LayoutParams(-1, dp(CONTENT_HEADER_DP)));
         treeList = new ListView(this);
         treeList.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
@@ -556,7 +650,7 @@ public final class MainActivity extends Activity {
                 lastTreeTouchX[0] = event.getX();
                 setActivePane(ActivePane.TREE_NODE);
             }
-            return false;
+            return handleTreePinchTouch(event);
         });
         treeList.setOnItemClickListener((parent, view, position, id) -> {
             TreeListAdapter.FlatNode row = treeAdapter.getItem(position);
@@ -595,11 +689,14 @@ public final class MainActivity extends Activity {
         titleEdit.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         titleEdit.setMinHeight(0);
         titleEdit.setMinimumHeight(0);
-        titleEdit.setTextSize(15f);
+        titleEdit.setTextSize(headerTextSp);
         titleEdit.setBackground(roundedBackground(Color.rgb(255, 250, 205), Color.rgb(226, 213, 145), 8));
         titleEdit.setPadding(dp(7), 0, dp(7), 0);
         titleEdit.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setActivePane(ActivePane.TITLE_TEXT); });
-        titleEdit.setOnTouchListener((view, event) -> { if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setActivePane(ActivePane.TITLE_TEXT); return false; });
+        titleEdit.setOnTouchListener((view, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setActivePane(ActivePane.TITLE_TEXT);
+            return handleHeaderPinchTouch(event);
+        });
         titleEdit.addTextChangedListener(new SimpleWatcher() {
             @Override public void afterTextChanged(Editable s) {
                 if (loadingEditor || currentNode == null) return;
@@ -622,7 +719,10 @@ public final class MainActivity extends Activity {
         applyEditorScrollbars();
         editor.setPadding(dp(10), dp(10), dp(10), dp(10));
         editor.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setActivePane(ActivePane.RTF_EDITOR); });
-        editor.setOnTouchListener((view, event) -> { if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setActivePane(ActivePane.RTF_EDITOR); return false; });
+        editor.setOnTouchListener((view, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setActivePane(ActivePane.RTF_EDITOR);
+            return handleEditorPinchTouch(event);
+        });
         editor.addTextChangedListener(new SimpleWatcher() {
             @Override public void afterTextChanged(Editable s) {
                 if (loadingEditor) return;
@@ -875,6 +975,126 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private abstract class StepScaleListener extends ScaleGestureDetector.SimpleOnScaleGestureListener {
+        private float accumulated = 1f;
+
+        @Override public boolean onScaleBegin(ScaleGestureDetector detector) {
+            accumulated = 1f;
+            return true;
+        }
+
+        @Override public boolean onScale(ScaleGestureDetector detector) {
+            if (detector == null) return true;
+            float factor = detector.getScaleFactor();
+            if (Float.isNaN(factor) || Float.isInfinite(factor) || factor <= 0f) return true;
+            accumulated *= factor;
+            int steps = 0;
+            while (accumulated >= PINCH_STEP_FACTOR && steps < PINCH_MAX_STEPS_PER_EVENT) {
+                onStep(+1);
+                accumulated /= PINCH_STEP_FACTOR;
+                steps++;
+            }
+            float shrink = 1f / PINCH_STEP_FACTOR;
+            steps = 0;
+            while (accumulated <= shrink && steps < PINCH_MAX_STEPS_PER_EVENT) {
+                onStep(-1);
+                accumulated *= PINCH_STEP_FACTOR;
+                steps++;
+            }
+            if (accumulated > PINCH_STEP_FACTOR * PINCH_STEP_FACTOR) accumulated = PINCH_STEP_FACTOR;
+            if (accumulated < shrink * shrink) accumulated = shrink;
+            return true;
+        }
+
+        @Override public void onScaleEnd(ScaleGestureDetector detector) {
+            accumulated = 1f;
+            onGestureFinished();
+        }
+
+        abstract void onStep(int direction);
+        void onGestureFinished() {}
+    }
+
+    private void initPinchGestureDetectors() {
+        editorScaleDetector = new ScaleGestureDetector(this, new StepScaleListener() {
+            @Override void onStep(int direction) { zoomRtfTextByStep(direction); }
+        });
+        treeScaleDetector = new ScaleGestureDetector(this, new StepScaleListener() {
+            @Override void onStep(int direction) { zoomTreeTextByStep(direction); }
+        });
+        toolbarScaleDetector = new ScaleGestureDetector(this, new StepScaleListener() {
+            @Override void onStep(int direction) { zoomToolbarButtonsByStep(direction); }
+            @Override void onGestureFinished() { flushAndroidUiZoomSettingsNow(); }
+        });
+        headerScaleDetector = new ScaleGestureDetector(this, new StepScaleListener() {
+            @Override void onStep(int direction) { zoomHeaderTextByStep(direction); }
+            @Override void onGestureFinished() { flushAndroidUiZoomSettingsNow(); }
+        });
+    }
+
+    private boolean handleEditorPinchTouch(MotionEvent event) {
+        safeScaleGesture(editorScaleDetector, event, PinchArea.EDITOR);
+        return updatePinchActive(event, PinchArea.EDITOR);
+    }
+
+    private boolean handleTreePinchTouch(MotionEvent event) {
+        safeScaleGesture(treeScaleDetector, event, PinchArea.TREE);
+        return updatePinchActive(event, PinchArea.TREE);
+    }
+
+    private boolean handleToolbarPinchTouch(MotionEvent event) {
+        safeScaleGesture(toolbarScaleDetector, event, PinchArea.TOOLBAR);
+        return updatePinchActive(event, PinchArea.TOOLBAR);
+    }
+
+    private boolean handleHeaderPinchTouch(MotionEvent event) {
+        safeScaleGesture(headerScaleDetector, event, PinchArea.HEADER);
+        return updatePinchActive(event, PinchArea.HEADER);
+    }
+
+    private void safeScaleGesture(ScaleGestureDetector detector, MotionEvent event, PinchArea area) {
+        if (detector == null || event == null) return;
+        try {
+            detector.onTouchEvent(event);
+        } catch (RuntimeException ex) {
+            setPinchActive(area, false);
+        }
+    }
+
+    private enum PinchArea { EDITOR, TREE, TOOLBAR, HEADER }
+
+    private boolean updatePinchActive(MotionEvent event, PinchArea area) {
+        if (event == null || area == null) return false;
+        int action = event.getActionMasked();
+        if (event.getPointerCount() >= 2 || action == MotionEvent.ACTION_POINTER_DOWN) setPinchActive(area, true);
+        boolean active = isPinchActive(area);
+        boolean consume = active || event.getPointerCount() >= 2;
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            consume = active;
+            setPinchActive(area, false);
+        }
+        return consume;
+    }
+
+    private boolean isPinchActive(PinchArea area) {
+        switch (area) {
+            case EDITOR: return editorPinchActive;
+            case TREE: return treePinchActive;
+            case TOOLBAR: return toolbarPinchActive;
+            case HEADER: return headerPinchActive;
+            default: return false;
+        }
+    }
+
+    private void setPinchActive(PinchArea area, boolean active) {
+        switch (area) {
+            case EDITOR: editorPinchActive = active; break;
+            case TREE: treePinchActive = active; break;
+            case TOOLBAR: toolbarPinchActive = active; break;
+            case HEADER: headerPinchActive = active; break;
+        }
+    }
+
     private LinearLayout addToolbarRow(LinearLayout parent, String label) {
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
@@ -883,17 +1103,17 @@ public final class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(0, dp(1), 0, dp(1));
-
         TextView caption = new TextView(this);
         caption.setText(toolbarRowGlyph(label));
         caption.setGravity(Gravity.CENTER);
-        caption.setTextSize(12f);
+        caption.setTextSize(toolbarGlyphTextSize(toolbarRowGlyph(label)));
         caption.setTypeface(Typeface.DEFAULT_BOLD);
         caption.setTextColor(Color.rgb(72, 84, 102));
         caption.setContentDescription(label + "-Leiste");
         if (Build.VERSION.SDK_INT >= 26) caption.setTooltipText(label + "-Leiste");
         caption.setBackground(roundedBackground(Color.rgb(238, 242, 248), Color.rgb(210, 218, 230), 8));
-        LinearLayout.LayoutParams captionParams = new LinearLayout.LayoutParams(dp(TOOLBAR_BUTTON_DP), dp(TOOLBAR_BUTTON_DP));
+        toolbarSquareViews.add(caption);
+        LinearLayout.LayoutParams captionParams = new LinearLayout.LayoutParams(dp(toolbarButtonDp), dp(toolbarButtonDp));
         captionParams.setMargins(dp(TOOLBAR_BUTTON_MARGIN_DP), dp(1), dp(3), dp(1));
         row.addView(caption, captionParams);
 
@@ -924,18 +1144,21 @@ public final class MainActivity extends Activity {
         b.setContentDescription(spec.contentDescription());
         if (Build.VERSION.SDK_INT >= 26) b.setTooltipText(spec.contentDescription());
         b.setOnClickListener(listener);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(TOOLBAR_BUTTON_DP), dp(TOOLBAR_BUTTON_DP));
+        toolbarSquareViews.add(b);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(toolbarButtonDp), dp(toolbarButtonDp));
         params.setMargins(dp(TOOLBAR_BUTTON_MARGIN_DP), dp(1), dp(TOOLBAR_BUTTON_MARGIN_DP), dp(1));
         toolbar.addView(b, params);
     }
 
     private float toolbarGlyphTextSize(String glyph) {
         int len = glyph == null ? 0 : glyph.codePointCount(0, glyph.length());
-        if (len >= 5) return 5.5f;
-        if (len == 4) return 6.5f;
-        if (len == 3) return 7.5f;
-        if (len == 2) return 9.5f;
-        return 14.5f;
+        float base;
+        if (len >= 5) base = 5.5f;
+        else if (len == 4) base = 6.5f;
+        else if (len == 3) base = 7.5f;
+        else if (len == 2) base = 9.5f;
+        else base = 14.5f;
+        return base * (toolbarButtonDp / (float) DEFAULT_TOOLBAR_BUTTON_DP);
     }
 
     private String toolbarRowGlyph(String label) {
@@ -2472,6 +2695,124 @@ public final class MainActivity extends Activity {
     }
 
 
+    private void zoomTreeTextByStep(int direction) {
+        if (currentNode == null || direction == 0) return;
+        setActivePane(ActivePane.TREE_NODE);
+        int next = LegacyTouchZoomModel.fontSizeByStep(currentTreeTitleSize(), direction);
+        applyTreeFontSize(next);
+    }
+
+    private void zoomRtfTextByStep(int direction) {
+        if (editor == null || direction == 0) return;
+        setActivePane(ActivePane.RTF_EDITOR);
+        Spannable text = editor.getText();
+        if (text == null || text.length() == 0) return;
+        int len = text.length();
+        int start = Math.max(0, Math.min(editor.getSelectionStart(), len));
+        int end = Math.max(0, Math.min(editor.getSelectionEnd(), len));
+        if (end < start) { int tmp = start; start = end; end = tmp; }
+        boolean whole = start == end;
+        if (whole) { start = 0; end = len; }
+        if (end <= start) return;
+
+        ArrayList<SizeRun> runs = new ArrayList<>();
+        int pos = start;
+        while (pos < end) {
+            int next = Math.min(end, text.nextSpanTransition(pos, end, AbsoluteSizeSpan.class));
+            if (next <= pos) next = pos + 1;
+            int current = editorPointSizeAt(text, pos);
+            runs.add(new SizeRun(pos, next, LegacyTouchZoomModel.fontSizeByStep(current, direction)));
+            pos = next;
+        }
+        removeOverlappingSpans(text, start, end, AbsoluteSizeSpan.class);
+        for (SizeRun run : runs) {
+            if (run.end > run.start) text.setSpan(new AbsoluteSizeSpan(run.size, true), run.start, run.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        markEditorRichChanged((whole ? "RTF-Schrift komplett " : "RTF-Auswahl ") + (direction > 0 ? "vergrößert" : "verkleinert"));
+    }
+
+    private int editorPointSizeAt(Spanned text, int pos) {
+        if (text == null || text.length() == 0) return 17;
+        int safe = Math.max(0, Math.min(pos, text.length() - 1));
+        AbsoluteSizeSpan[] spans = text.getSpans(safe, safe + 1, AbsoluteSizeSpan.class);
+        if (spans != null && spans.length > 0) return Math.max(1, spans[spans.length - 1].getSize());
+        float scaledDensity = getResources().getDisplayMetrics().scaledDensity;
+        if (scaledDensity <= 0f) return 17;
+        return Math.max(1, Math.round(editor.getTextSize() / scaledDensity));
+    }
+
+    private void zoomToolbarButtonsByStep(int direction) {
+        if (direction == 0) return;
+        int next = LegacyTouchZoomModel.toolbarButtonDpByStep(toolbarButtonDp, direction);
+        if (next == toolbarButtonDp) return;
+        toolbarButtonDp = next;
+        requestApplyToolbarButtonSize();
+        scheduleAndroidUiZoomSettingsSave();
+    }
+
+    private void requestApplyToolbarButtonSize() {
+        if (toolbarButtonSizeApplyScheduled) return;
+        toolbarButtonSizeApplyScheduled = true;
+        if (mainHandler != null) {
+            mainHandler.post(() -> {
+                toolbarButtonSizeApplyScheduled = false;
+                applyToolbarButtonSize();
+            });
+        } else {
+            toolbarButtonSizeApplyScheduled = false;
+            applyToolbarButtonSize();
+        }
+    }
+
+    private void applyToolbarButtonSize() {
+        for (TextView view : toolbarSquareViews) {
+            if (view == null) continue;
+            ViewGroup.LayoutParams params = view.getLayoutParams();
+            if (params != null) {
+                params.width = dp(toolbarButtonDp);
+                params.height = dp(toolbarButtonDp);
+                view.setLayoutParams(params);
+            }
+            view.setTextSize(toolbarGlyphTextSize(view.getText() == null ? "" : view.getText().toString()));
+        }
+    }
+
+    private void zoomHeaderTextByStep(int direction) {
+        if (direction == 0) return;
+        float next = LegacyTouchZoomModel.headerTextSpByStep(headerTextSp, direction);
+        if (Math.abs(next - headerTextSp) < 0.01f) return;
+        headerTextSp = next;
+        applyHeaderTextSize();
+        scheduleAndroidUiZoomSettingsSave();
+    }
+
+    private void applyHeaderTextSize() {
+        if (rootTitleView != null) rootTitleView.setTextSize(headerTextSp);
+        if (titleEdit != null) titleEdit.setTextSize(headerTextSp);
+    }
+
+    private void scheduleAndroidUiZoomSettingsSave() {
+        if (mainHandler == null) {
+            saveAndroidUiZoomSettings();
+            return;
+        }
+        if (androidUiZoomSaveRunnable == null) androidUiZoomSaveRunnable = this::saveAndroidUiZoomSettings;
+        mainHandler.removeCallbacks(androidUiZoomSaveRunnable);
+        mainHandler.postDelayed(androidUiZoomSaveRunnable, UI_ZOOM_SAVE_DELAY_MS);
+    }
+
+    private void flushAndroidUiZoomSettingsNow() {
+        if (mainHandler != null && androidUiZoomSaveRunnable != null) mainHandler.removeCallbacks(androidUiZoomSaveRunnable);
+        saveAndroidUiZoomSettings();
+    }
+
+    private void saveAndroidUiZoomSettings() {
+        if (settings == null) settings = AndroidSettingsStore.load(this);
+        settings.androidToolbarButtonDp = LegacySettings.normalizeAndroidToolbarButtonDp(toolbarButtonDp);
+        settings.androidHeaderTextSp = LegacySettings.normalizeAndroidHeaderTextSp(headerTextSp);
+        AndroidSettingsStore.save(this, settings);
+    }
+
     private void showRtfFormatDialog() {
         if (currentNode == null) return;
         saveCurrentEditorToNode();
@@ -2795,16 +3136,15 @@ public final class MainActivity extends Activity {
     private void insertImageFromUri(Uri uri) {
         if (currentNode == null || uri == null || editor == null) return;
         try {
-            byte[] bytes = readAll(uri);
-            String mime = getContentResolver().getType(uri);
-            String rawPicture = RtfUtils.rtfPictureFromImage(bytes, mime);
+            PreparedImage image = prepareImageForRtf(uri);
+            String rawPicture = RtfUtils.rtfPictureFromImage(image.bytes, image.mimeType);
             if (rawPicture == null || rawPicture.isEmpty()) {
-                error("Bild einfügen", "Dieses Bildformat kann nicht als ALX/RTF-Bild gespeichert werden. Unterstützt sind PNG, JPEG und BMP.");
+                error("Bild einfügen", "Dieses Bildformat kann nicht als ALX/RTF-Bild gespeichert werden. Unterstützt sind PNG, JPEG und BMP. Große oder fremde Formate werden vorher verkleinert und als JPEG gespeichert.");
                 return;
             }
-            Drawable drawable = imageDrawable(bytes, 0, 0);
+            Drawable drawable = imageDrawable(image.bytes, 0, 0);
             if (drawable == null) {
-                error("Bild einfügen", "Das Bild konnte nicht dekodiert werden.");
+                error("Bild einfügen", "Das Bild konnte auch nach Speicher-Schutz nicht dekodiert werden.");
                 return;
             }
             Editable editable = editor.getText();
@@ -2813,15 +3153,137 @@ public final class MainActivity extends Activity {
             int end = Math.max(0, Math.min(editor.getSelectionEnd(), text.length()));
             if (end < start) { int tmp = start; start = end; end = tmp; }
             editable.replace(start, end, RTF_IMAGE_CHAR);
-            text.setSpan(new RtfImageSpan(drawable, rawPicture, mime, bytes, 0, 0), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            text.setSpan(new RtfImageSpan(drawable, rawPicture, image.mimeType, image.bytes, 0, 0), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             editor.setSelection(start + 1);
-            markEditorRichChanged("Bild eingefügt und sichtbar eingebettet");
+            markEditorRichChanged(image.note.isEmpty() ? "Bild eingefügt und sichtbar eingebettet" : image.note);
+        } catch (OutOfMemoryError oom) {
+            error("Bild einfügen", "Das Bild ist zu groß für den verfügbaren Android-Speicher. Es wurde nicht eingefügt, damit die Notizen-Datei nicht abstürzt.");
         } catch (Exception e) {
             error("Bild einfügen", e.getMessage());
         }
     }
 
 
+
+    private PreparedImage prepareImageForRtf(Uri uri) throws Exception {
+        String mime = getContentResolver().getType(uri);
+        BitmapFactory.Options bounds = decodeImageBounds(uri);
+        boolean hasBounds = bounds != null && bounds.outWidth > 0 && bounds.outHeight > 0;
+        long sourceBytes = queryOpenableSize(uri);
+        boolean supportedMime = isRtfSupportedImageMime(mime);
+        if (hasBounds && LegacyTouchZoomModel.shouldDownsampleForRtf(bounds.outWidth, bounds.outHeight, Math.max(0L, sourceBytes), supportedMime)) {
+            return decodeCompressImageForRtf(uri, bounds, "Großes Bild speicherschonend verkleinert und eingefügt");
+        }
+
+        byte[] raw = readAllLimited(uri, MAX_EMBEDDED_IMAGE_BYTES + 1);
+        if (raw.length <= MAX_EMBEDDED_IMAGE_BYTES) {
+            String rawPicture = RtfUtils.rtfPictureFromImage(raw, mime);
+            if (rawPicture != null && !rawPicture.isEmpty()) {
+                return new PreparedImage(raw, mime, "Bild eingefügt und sichtbar eingebettet");
+            }
+        }
+        if (hasBounds) {
+            return decodeCompressImageForRtf(uri, bounds, "Bildformat/Größe für RTF angepasst und eingefügt");
+        }
+        throw new IllegalStateException("Das Bild ist zu groß oder kein dekodierbares Android-Bild. Bitte PNG, JPEG oder BMP verwenden.");
+    }
+
+    private BitmapFactory.Options decodeImageBounds(Uri uri) {
+        InputStream in = null;
+        try {
+            in = getContentResolver().openInputStream(uri);
+            if (in == null) return null;
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeStream(in, null, options);
+            return options;
+        } catch (Exception ignored) {
+            return null;
+        } finally {
+            try { if (in != null) in.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private PreparedImage decodeCompressImageForRtf(Uri uri, BitmapFactory.Options bounds, String note) throws Exception {
+        Bitmap bitmap = decodeScaledBitmapFromUri(uri, bounds, MAX_EMBED_IMAGE_LONG_EDGE_PX);
+        if (bitmap == null) throw new IllegalStateException("Das Bild konnte nicht speicherschonend dekodiert werden.");
+        try {
+            return compressBitmapForRtf(bitmap, note);
+        } finally {
+            try { if (!bitmap.isRecycled()) bitmap.recycle(); } catch (Exception ignored) {}
+        }
+    }
+
+    private Bitmap decodeScaledBitmapFromUri(Uri uri, BitmapFactory.Options bounds, int maxLongEdge) throws Exception {
+        int width = bounds == null ? 0 : bounds.outWidth;
+        int height = bounds == null ? 0 : bounds.outHeight;
+        int sample = calculateImageSampleSize(width, height, maxLongEdge);
+        for (int attempt = 0; attempt < 5; attempt++) {
+            InputStream in = null;
+            try {
+                in = getContentResolver().openInputStream(uri);
+                if (in == null) return null;
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inSampleSize = Math.max(1, sample);
+                options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+                return BitmapFactory.decodeStream(in, null, options);
+            } catch (OutOfMemoryError oom) {
+                sample = Math.max(sample + 1, sample * 2);
+            } finally {
+                try { if (in != null) in.close(); } catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
+    private PreparedImage compressBitmapForRtf(Bitmap bitmap, String note) throws Exception {
+        Bitmap current = bitmap;
+        byte[] bytes = compressJpeg(current, IMAGE_JPEG_QUALITY);
+        int quality = IMAGE_JPEG_QUALITY;
+        while (bytes.length > MAX_EMBEDDED_IMAGE_BYTES && quality > 52) {
+            quality -= 8;
+            bytes = compressJpeg(current, quality);
+        }
+        while (bytes.length > MAX_EMBEDDED_IMAGE_BYTES && Math.max(current.getWidth(), current.getHeight()) > 360) {
+            int nextWidth = Math.max(1, Math.round(current.getWidth() * 0.78f));
+            int nextHeight = Math.max(1, Math.round(current.getHeight() * 0.78f));
+            Bitmap scaled = Bitmap.createScaledBitmap(current, nextWidth, nextHeight, true);
+            if (current != bitmap) current.recycle();
+            current = scaled;
+            quality = IMAGE_JPEG_QUALITY;
+            bytes = compressJpeg(current, quality);
+            while (bytes.length > MAX_EMBEDDED_IMAGE_BYTES && quality > 52) {
+                quality -= 8;
+                bytes = compressJpeg(current, quality);
+            }
+        }
+        if (current != bitmap) {
+            try { current.recycle(); } catch (Exception ignored) {}
+        }
+        if (bytes.length > MAX_EMBEDDED_IMAGE_BYTES) {
+            throw new IllegalStateException("Das Bild bleibt trotz Verkleinerung zu groß für ein stabiles RTF-Einbetten.");
+        }
+        return new PreparedImage(bytes, "image/jpeg", note);
+    }
+
+    private byte[] compressJpeg(Bitmap bitmap, int quality) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, Math.max(45, Math.min(95, quality)), out);
+        return out.toByteArray();
+    }
+
+    private int calculateImageSampleSize(int width, int height, int maxLongEdge) {
+        int sample = 1;
+        int max = Math.max(width, height);
+        int target = Math.max(320, maxLongEdge);
+        while (max / sample > target && sample < 64) sample *= 2;
+        return Math.max(1, sample);
+    }
+
+    private boolean isRtfSupportedImageMime(String mime) {
+        String m = mime == null ? "" : mime.toLowerCase(Locale.ROOT);
+        return m.equals("image/png") || m.equals("image/jpeg") || m.equals("image/jpg") || m.equals("image/bmp") || m.equals("image/x-ms-bmp");
+    }
 
     private void showPrintDialog() {
         if (currentNode == null) return;
@@ -3322,17 +3784,38 @@ public final class MainActivity extends Activity {
 
     private Drawable imageDrawable(byte[] data, int widthTwips, int heightTwips) {
         if (data == null || data.length == 0) return null;
-        Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try { BitmapFactory.decodeByteArray(data, 0, data.length, bounds); } catch (Throwable ignored) {}
+        int sourceWidth = bounds.outWidth > 0 ? bounds.outWidth : 0;
+        int sourceHeight = bounds.outHeight > 0 ? bounds.outHeight : 0;
+        int sample = calculateImageSampleSize(sourceWidth, sourceHeight, MAX_IMAGE_DISPLAY_LONG_EDGE_PX);
+        Bitmap bitmap = null;
+        for (int attempt = 0; attempt < 5 && bitmap == null; attempt++) {
+            try {
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inSampleSize = Math.max(1, sample);
+                options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+                bitmap = BitmapFactory.decodeByteArray(data, 0, data.length, options);
+            } catch (OutOfMemoryError oom) {
+                sample = Math.max(sample + 1, sample * 2);
+            }
+        }
         if (bitmap == null) return null;
+        if (sourceWidth <= 0) sourceWidth = bitmap.getWidth() * Math.max(1, sample);
+        if (sourceHeight <= 0) sourceHeight = bitmap.getHeight() * Math.max(1, sample);
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        int width = widthTwips > 0 ? Math.round((widthTwips / 15.0f) * dm.density) : bitmap.getWidth();
-        int height = heightTwips > 0 ? Math.round((heightTwips / 15.0f) * dm.density) : bitmap.getHeight();
+        int width = widthTwips > 0 ? Math.round((widthTwips / 15.0f) * dm.density) : sourceWidth;
+        int height = heightTwips > 0 ? Math.round((heightTwips / 15.0f) * dm.density) : sourceHeight;
         if (width <= 0) width = bitmap.getWidth();
         if (height <= 0) height = bitmap.getHeight();
         int maxWidth = Math.max(dp(120), dm.widthPixels - dp(48));
-        if (width > maxWidth && width > 0) {
-            float scale = maxWidth / (float) width;
-            width = maxWidth;
+        int maxHeight = Math.max(dp(180), dm.heightPixels * 2);
+        float scale = 1f;
+        if (width > maxWidth && width > 0) scale = Math.min(scale, maxWidth / (float) width);
+        if (height > maxHeight && height > 0) scale = Math.min(scale, maxHeight / (float) height);
+        if (scale < 1f) {
+            width = Math.max(1, Math.round(width * scale));
             height = Math.max(1, Math.round(height * scale));
         }
         BitmapDrawable drawable = new BitmapDrawable(getResources(), bitmap);
@@ -4248,6 +4731,8 @@ public final class MainActivity extends Activity {
                 "v83 ergänzt: Dialog-Fokusmodell, ToolStrip-Toggles, Hauptfenster-Chrome, Autosave-Tick, CText-Semantik und Termux-APK-Buildplan.\n\n" +
                 "v95 ergänzt: font_set-Entscheidungsmodell, Move-/Resize-Mausmodell und ALX-Stream-Pipeline für lokale Datei, SAF und FTP.\n\n" +
                 "v103 korrigiert: der erste Leer/Neu-Start leert den Android-Baum wirklich, baut den Adapter neu auf und setzt die RTF-Box ohne alte Knotenreste zurück; Speichern-vorher läuft nach SAF-Speichern automatisch weiter.\n\n" +
+                "v105 stabilisiert den Zwei-Finger-Zoom der drei oberen Symbolleisten: die gesamte Toolbar-Fläche ist ein gemeinsames Zoomziel, Kind-Buttons bekommen keine eigenen konkurrierenden Touch-Listener mehr, Layoutänderungen werden gebündelt und Config-Speichern wird verzögert.\n\n" +
+                "v104 ergänzt: Zwei-Finger-Zoom für RTF-Auswahl/ganzen RTF-Text, selektierten Baumtext, obere quadratische Symbolbuttons und die beiden hellgelben Überschriftfelder; große Bilder werden beim Einfügen und Anzeigen speicherschonend verkleinert/dekodiert.\n\n" +
                 "Bewusst mobil angepasst: Android nutzt keinen Windows-Tray und keine frei schwebenden Desktop-Haftnotiz-Fenster. Diese Metadaten bleiben im ALX erhalten und können mobil editiert werden. RTF wird als lesbarer Text angezeigt; vorhandenes RTF bleibt erhalten, solange die Notiz nicht bearbeitet wird.\n\n" +
                 "Lizenz: GPLv3 wie die Ausgangsarchive.";
         new AlertDialog.Builder(this).setTitle(about.title + " " + about.version).setMessage(msg).setPositiveButton(about.closeLabel, null).show();
@@ -4510,6 +4995,44 @@ public final class MainActivity extends Activity {
         while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
         in.close();
         return out.toByteArray();
+    }
+
+    private byte[] readAllLimited(Uri uri, int limit) throws Exception {
+        ContentResolver resolver = getContentResolver();
+        InputStream in = resolver.openInputStream(uri);
+        if (in == null) throw new IllegalStateException("Datei kann nicht gelesen werden.");
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            int total = 0;
+            int cap = Math.max(1, limit);
+            while ((n = in.read(buf)) != -1) {
+                int allowed = Math.min(n, cap - total);
+                if (allowed > 0) out.write(buf, 0, allowed);
+                total += n;
+                if (total >= cap) break;
+            }
+            return out.toByteArray();
+        } finally {
+            try { in.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private long queryOpenableSize(Uri uri) {
+        if (uri == null) return -1L;
+        Cursor cursor = null;
+        try {
+            cursor = getContentResolver().query(uri, null, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                int idx = cursor.getColumnIndex(OpenableColumns.SIZE);
+                if (idx >= 0 && !cursor.isNull(idx)) return cursor.getLong(idx);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+        return -1L;
     }
 
     private void writeAll(Uri uri, byte[] bytes) throws Exception {

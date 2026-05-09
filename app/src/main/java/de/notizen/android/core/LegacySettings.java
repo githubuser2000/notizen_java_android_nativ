@@ -56,6 +56,8 @@ public final class LegacySettings {
     public int windowHeight = 700;
     public String windowState = "Normal";
     public int androidTreePaneWidthDp = 280;
+    public int androidToolbarButtonDp = LegacyTouchZoomModel.DEFAULT_TOOLBAR_BUTTON_DP;
+    public float androidHeaderTextSp = LegacyTouchZoomModel.DEFAULT_HEADER_TEXT_SP;
     public long feedbackDayTicks = 0L;
     public int feedbackCount = 0;
     public final Map<String, int[]> toolstripPositions = defaultToolstripPositions();
@@ -91,6 +93,8 @@ public final class LegacySettings {
         s.windowHeight = windowHeight;
         s.windowState = windowState;
         s.androidTreePaneWidthDp = androidTreePaneWidthDp;
+        s.androidToolbarButtonDp = androidToolbarButtonDp;
+        s.androidHeaderTextSp = androidHeaderTextSp;
         s.feedbackDayTicks = feedbackDayTicks;
         s.feedbackCount = feedbackCount;
         s.toolstripPositions.clear();
@@ -119,6 +123,14 @@ public final class LegacySettings {
     public static int normalizeAndroidTreePaneWidthDp(int value) {
         if (value <= 0) return 280;
         return Math.max(24, Math.min(1200, value));
+    }
+
+    public static int normalizeAndroidToolbarButtonDp(int value) {
+        return LegacyTouchZoomModel.normalizeToolbarButtonDp(value);
+    }
+
+    public static float normalizeAndroidHeaderTextSp(float value) {
+        return LegacyTouchZoomModel.normalizeHeaderTextSp(value);
     }
 
     public static String normalizeWindowState(String value) {
@@ -306,6 +318,8 @@ public final class LegacySettings {
         Element androidUi = child(root, "android-ui");
         if (androidUi != null) {
             androidTreePaneWidthDp = normalizeAndroidTreePaneWidthDp(asInt(androidUi.getAttribute("treepane-width-dp"), androidTreePaneWidthDp));
+            androidToolbarButtonDp = normalizeAndroidToolbarButtonDp(asInt(androidUi.getAttribute("toolbar-button-dp"), androidToolbarButtonDp));
+            androidHeaderTextSp = normalizeAndroidHeaderTextSp(asFloat(androidUi.getAttribute("header-text-sp"), androidHeaderTextSp));
         }
     }
 
@@ -327,7 +341,10 @@ public final class LegacySettings {
         append(doc, root, "minimized-show-in", attrsFor("minimized-show-in", map("taskbar", yesNo(showInTaskbarWhenMinimized))));
         append(doc, root, "tray", attrsFor("tray", map("gnome-safe-start", yesNo(gnomeSafeTrayStart))));
         append(doc, root, "desknotes", attrsFor("desknotes", map("show_desknote_borders", yesNo(showDesknoteBorders))));
-        append(doc, root, "android-ui", attrsFor("android-ui", map("treepane-width-dp", String.valueOf(normalizeAndroidTreePaneWidthDp(androidTreePaneWidthDp)))));
+        append(doc, root, "android-ui", attrsFor("android-ui", map(
+                "treepane-width-dp", String.valueOf(normalizeAndroidTreePaneWidthDp(androidTreePaneWidthDp)),
+                "toolbar-button-dp", String.valueOf(normalizeAndroidToolbarButtonDp(androidToolbarButtonDp)),
+                "header-text-sp", trimFloat(normalizeAndroidHeaderTextSp(androidHeaderTextSp)))));
         Element stripes = append(doc, root, "tool-stripes", attrsFor("tool-stripes", new LinkedHashMap<String, String>()));
         for (String name : new String[]{"haupt", "elements", "font", "cutpastecopy"}) {
             int[] pos = toolstripPositions.get(name);
@@ -436,7 +453,7 @@ public final class LegacySettings {
         if ("minimized-show-in".equals(path)) return new LinkedHashSet<>(Arrays.asList("taskbar"));
         if ("tray".equals(path)) return new LinkedHashSet<>(Arrays.asList("gnome-safe-start", "gnome_safe_start"));
         if ("main-form".equals(path)) return new LinkedHashSet<>(Arrays.asList("x", "y", "width", "height", "windowstate"));
-        if ("android-ui".equals(path)) return new LinkedHashSet<>(Arrays.asList("treepane-width-dp"));
+        if ("android-ui".equals(path)) return new LinkedHashSet<>(Arrays.asList("treepane-width-dp", "toolbar-button-dp", "header-text-sp"));
         if ("open/once-opened".equals(path)) return new LinkedHashSet<>(Arrays.asList("file", "timestamp"));
         if (path.startsWith("tool-stripes/")) return new LinkedHashSet<>(Arrays.asList("x", "y"));
         return new LinkedHashSet<>();
@@ -500,7 +517,12 @@ public final class LegacySettings {
 
     private static String attr(Element el, String name, String fallback) { return el.hasAttribute(name) ? el.getAttribute(name) : fallback; }
     private static int asInt(String value, int fallback) { try { return Integer.parseInt(value); } catch (Exception e) { return fallback; } }
+    private static float asFloat(String value, float fallback) { try { return Float.parseFloat(value); } catch (Exception e) { return fallback; } }
     private static long asLong(String value, long fallback) { try { return Long.parseLong(value); } catch (Exception e) { return fallback; } }
+    private static String trimFloat(float value) {
+        if (value == Math.round(value)) return String.valueOf(Math.round(value));
+        return String.valueOf(value);
+    }
     private static boolean asBool(String value, boolean fallback) {
         if (value == null || value.isEmpty()) return fallback;
         String v = value.trim().toLowerCase(Locale.ROOT);
