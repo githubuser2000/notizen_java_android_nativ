@@ -407,7 +407,7 @@ Neu hinzugekommen sind `LegacyFontSetModel`, `LegacyWindowMoveResizeModel` und `
 
 ## v108
 
-- Version erhöht auf `versionCode 109` / `versionName 1.0.109-java-android-nativ`.
+- Version erhöht auf `versionCode 108` / `versionName 1.0.108-java-android-nativ`.
 - Haftnotizen/Widgets wurden Android-gerechter weitergeführt: Widgets merken jetzt den ALX-Knotenpfad, Dokumentnamen, Farben und Textgröße und können beim Speichern anhand des aktuellen Dokuments aktualisiert werden. Tippen auf ein Widget öffnet die App wieder beim passenden Knoten.
 - Die Widget-Liste wurde ausgebaut: vorhandene Startbildschirm-Widgets können angezeigt werden; die Aktion `Haftliste` nutzt diese Übersicht.
 - Export, Teilen und Drucken wurden in einen gemeinsamen `Export`-Dialog zusammengeführt: aktueller Knoten, aktueller Teilbaum oder ganzer Baum können als TXT, ANSI-TXT, Unicode-TXT, HTML oder RTF gespeichert oder über Android geteilt werden.
@@ -425,3 +425,13 @@ Neu hinzugekommen sind `LegacyFontSetModel`, `LegacyWindowMoveResizeModel` und `
 - Haftnotiz-Widgets übernehmen nun RTF-Bilder als Bildvorschau; bis zu vier Bilder werden als Widget-Collage dargestellt.
 - Widget-Previewdaten werden speicherschonend als interne Dateien gehalten und bei Widget-Löschung entfernt.
 - Große RTF-Bilder werden für Widgets nur begrenzt extrahiert, damit Speicherdruck durch mehr-MB-Bilder reduziert wird.
+
+
+## v110
+
+- Version erhöht auf `versionCode 110` / `versionName 1.0.110-java-android-nativ`.
+- Neuer Button `Markdown`/`MD` in der RTF-Textleiste: erkennt Markdown im aus RTF gewonnenen Rohtext und zeigt es schreibgeschützt gerendert direkt in der RTF-Box.
+- Der Markdown-Modus ignoriert RTF-Textformatierung und RTF-Bilder für die Erkennung/Vorschau, indem zuerst in Rohtext umgewandelt und Bild-/Objekt-Platzhalter entfernt werden.
+- Nochmaliges Drücken des Markdown-Buttons stellt den ursprünglichen RTF-Editorinhalt wieder her.
+- Speichern während aktiver Markdown-Vorschau überschreibt den Knoten nicht mit Vorschautext; vorhandenes RTF, Formatierungen und Bilder bleiben erhalten.
+- Neue Kernklasse `LegacyMarkdownPreviewModel` mit Rohtextbereinigung, Markdown-Erkennung und Statusmodell.

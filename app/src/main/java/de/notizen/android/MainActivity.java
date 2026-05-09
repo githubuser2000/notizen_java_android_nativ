@@ -36,12 +36,16 @@ import android.text.Spannable;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextWatcher;
+import android.text.method.KeyListener;
 import android.text.style.AbsoluteSizeSpan;
 import android.text.style.AlignmentSpan;
 import android.text.style.BackgroundColorSpan;
 import android.text.style.CharacterStyle;
 import android.text.style.ForegroundColorSpan;
+import android.text.style.BulletSpan;
 import android.text.style.ImageSpan;
+import android.text.style.QuoteSpan;
+import android.text.style.RelativeSizeSpan;
 import android.text.style.LeadingMarginSpan;
 import android.text.style.ParagraphStyle;
 import android.text.style.StrikethroughSpan;
@@ -155,6 +159,7 @@ import de.notizen.android.core.LegacyFontSetModel;
 import de.notizen.android.core.LegacyWindowMoveResizeModel;
 import de.notizen.android.core.LegacyAlxStreamPipeline;
 import de.notizen.android.core.LegacyMainLayoutModel;
+import de.notizen.android.core.LegacyMarkdownPreviewModel;
 import de.notizen.android.core.LegacyPackagePermissionModel;
 import de.notizen.android.core.LegacyRecentMenu;
 import de.notizen.android.core.LegacyNodeExport;
@@ -200,7 +205,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.109-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.110-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -287,6 +292,7 @@ public final class MainActivity extends Activity {
     private CheckBox quickSearchCaseSensitive;
     private CheckBox quickSearchIncludeTitles;
     private TextView quickSearchStatus;
+    private TextView markdownPreviewButton;
     private WebView pendingPrintView;
     private Runnable autosaveRunnable;
     private Runnable runtimeSnapshotRunnable;
@@ -321,6 +327,10 @@ public final class MainActivity extends Activity {
     private boolean editorHistoryRestoring = false;
     private boolean editorHistorySnapshotLocked = false;
     private boolean formatToolbarUpdateScheduled = false;
+    private boolean markdownPreviewActive = false;
+    private NoteNode markdownPreviewNode;
+    private String markdownPreviewSourceRtf = "";
+    private KeyListener editorEditableKeyListener;
     private NoteNode treeDragSource;
     private NoteNode treeDragPreviewTarget;
     private TreeListAdapter.DropPreview treeDragPreviewMode = TreeListAdapter.DropPreview.NONE;
@@ -360,6 +370,9 @@ public final class MainActivity extends Activity {
         boolean quickSearchCaseSensitive;
         boolean quickSearchIncludeTitles;
         boolean quickSearchVisible;
+        boolean markdownPreviewActive;
+        NoteNode markdownPreviewNode;
+        String markdownPreviewSourceRtf;
     }
 
     /**
@@ -700,6 +713,9 @@ public final class MainActivity extends Activity {
             treePaneWidthDp = retained.treePaneWidthDp > 0 ? LegacySettings.normalizeAndroidTreePaneWidthDp(retained.treePaneWidthDp) : LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
             toolbarButtonDp = retained.toolbarButtonDp > 0 ? LegacySettings.normalizeAndroidToolbarButtonDp(retained.toolbarButtonDp) : LegacySettings.normalizeAndroidToolbarButtonDp(settings.androidToolbarButtonDp);
             headerTextSp = retained.headerTextSp > 0f ? LegacySettings.normalizeAndroidHeaderTextSp(retained.headerTextSp) : LegacySettings.normalizeAndroidHeaderTextSp(settings.androidHeaderTextSp);
+            markdownPreviewActive = false;
+            markdownPreviewNode = retained.markdownPreviewActive ? retained.markdownPreviewNode : null;
+            markdownPreviewSourceRtf = retained.markdownPreviewSourceRtf == null ? "" : retained.markdownPreviewSourceRtf;
         } else {
             settings = AndroidSettingsStore.load(this);
             treePaneWidthDp = LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
@@ -723,6 +739,7 @@ public final class MainActivity extends Activity {
                 editor.setSelection(start, end);
             }
             updateTitle();
+            if (retained.markdownPreviewActive && markdownPreviewNode == currentNode) activateMarkdownPreviewForCurrentNode(false);
             selectPendingWidgetNodeIfAny();
         } else {
             selectNode(currentNode == null ? document.ensureRoot() : currentNode, false);
@@ -762,6 +779,9 @@ public final class MainActivity extends Activity {
         retained.quickSearchCaseSensitive = quickSearchCaseSensitive != null && quickSearchCaseSensitive.isChecked();
         retained.quickSearchIncludeTitles = quickSearchIncludeTitles == null || quickSearchIncludeTitles.isChecked();
         retained.quickSearchVisible = quickSearchBar != null && quickSearchBar.getVisibility() == View.VISIBLE;
+        retained.markdownPreviewActive = markdownPreviewActive;
+        retained.markdownPreviewNode = markdownPreviewNode;
+        retained.markdownPreviewSourceRtf = markdownPreviewSourceRtf;
         return retained;
     }
 
@@ -918,6 +938,7 @@ public final class MainActivity extends Activity {
         addButton(textToolbar, "Scroll", v -> cycleScrollbars());
         addButton(textToolbar, "Bild", v -> insertImage());
         addButton(textToolbar, "Stift", v -> insertInkDrawing());
+        markdownPreviewButton = addButton(textToolbar, "Markdown", v -> toggleMarkdownPreview());
         addButton(textToolbar, "RTF Info", v -> showRtfInfoDialog());
         addButton(textToolbar, "HTML Import", v -> importHtmlNote());
         addButton(textToolbar, "TXT Import", v -> importTextIntoCurrent());
@@ -1035,6 +1056,7 @@ public final class MainActivity extends Activity {
         right.addView(titleEdit, new LinearLayout.LayoutParams(-1, dp(CONTENT_HEADER_DP)));
 
         editor = new TrackingEditText(this);
+        editorEditableKeyListener = editor.getKeyListener();
         editor.setTextSize(settings == null ? 17f : LegacySettings.normalizeAndroidEditorTextSp(settings.androidEditorTextSp));
         editor.setGravity(Gravity.TOP | Gravity.START);
         editor.setMinLines(12);
@@ -1072,6 +1094,7 @@ public final class MainActivity extends Activity {
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
 
         setContentView(root);
+        updateMarkdownPreviewButtonState();
         updateTitle();
         rebuildTree();
     }
@@ -1754,7 +1777,11 @@ public final class MainActivity extends Activity {
         }
         if (editor != null) {
             boolean active = lastActivePane == ActivePane.RTF_EDITOR;
-            editor.setBackground(roundedBackground(Color.WHITE, active ? Color.rgb(74, 133, 216) : Color.rgb(213, 219, 229), 8));
+            if (markdownPreviewActive) {
+                editor.setBackground(roundedBackground(Color.rgb(248, 251, 255), Color.rgb(80, 144, 210), 8));
+            } else {
+                editor.setBackground(roundedBackground(Color.WHITE, active ? Color.rgb(74, 133, 216) : Color.rgb(213, 219, 229), 8));
+            }
         }
     }
 
@@ -1899,6 +1926,320 @@ public final class MainActivity extends Activity {
         status("Scrollleisten: " + LegacyScrollbars.label(settings.scrollbarsChoice));
     }
 
+    private void toggleMarkdownPreview() {
+        if (markdownPreviewActive) {
+            deactivateMarkdownPreview(true);
+            return;
+        }
+        activateMarkdownPreviewForCurrentNode(true);
+    }
+
+    private boolean activateMarkdownPreviewForCurrentNode(boolean showStatus) {
+        if (currentNode == null || editor == null) return false;
+        if (markdownPreviewActive && markdownPreviewNode == currentNode) return true;
+        if (markdownPreviewActive) clearMarkdownPreviewState(false);
+
+        // First commit real editor changes to the node as RTF.  The preview then
+        // works from raw text extracted from that RTF, while the RTF itself stays
+        // untouched for later saving.
+        saveCurrentEditorToNode();
+        String sourceRtf = currentNode.rtf == null ? "" : currentNode.rtf;
+        String raw = LegacyMarkdownPreviewModel.rawMarkdownTextFromRtf(sourceRtf);
+        if (!LegacyMarkdownPreviewModel.looksLikeMarkdown(raw)) {
+            if (showStatus) status("Kein Markdown im RTF-Rohtext erkannt");
+            return false;
+        }
+
+        SpannableStringBuilder rendered = renderMarkdownPreview(raw);
+        boolean oldLoading = loadingEditor;
+        loadingEditor = true;
+        try {
+            editor.setText(rendered);
+            editor.setSelection(0, 0);
+        } finally {
+            loadingEditor = oldLoading;
+        }
+        markdownPreviewActive = true;
+        markdownPreviewNode = currentNode;
+        markdownPreviewSourceRtf = sourceRtf;
+        editorDirty = false;
+        editorUndoStack.clear();
+        editorRedoStack.clear();
+        setEditorMarkdownReadOnly(true);
+        updateMarkdownPreviewButtonState();
+        updateActivePaneChrome();
+        if (showStatus) status(LegacyMarkdownPreviewModel.statusForPreview(raw) + " · nur Anzeige, RTF bleibt erhalten");
+        return true;
+    }
+
+    private void deactivateMarkdownPreview(boolean showStatus) {
+        if (!markdownPreviewActive || editor == null) return;
+        NoteNode node = markdownPreviewNode == null ? currentNode : markdownPreviewNode;
+        String sourceRtf = node == null ? markdownPreviewSourceRtf : (node.rtf == null ? "" : node.rtf);
+        clearMarkdownPreviewState(false);
+        boolean oldLoading = loadingEditor;
+        loadingEditor = true;
+        try {
+            editor.setText(rtfToEditorText(sourceRtf));
+            editor.setSelection(editor.getText().length());
+        } finally {
+            loadingEditor = oldLoading;
+        }
+        editorDirty = false;
+        editorUndoStack.clear();
+        editorRedoStack.clear();
+        setEditorMarkdownReadOnly(false);
+        updateMarkdownPreviewButtonState();
+        updateActivePaneChrome();
+        if (showStatus) status("Markdown-Vorschau aus · ursprünglicher RTF-Inhalt wieder sichtbar");
+    }
+
+    private void clearMarkdownPreviewState(boolean updateUi) {
+        markdownPreviewActive = false;
+        markdownPreviewNode = null;
+        markdownPreviewSourceRtf = "";
+        setEditorMarkdownReadOnly(false);
+        if (updateUi) {
+            updateMarkdownPreviewButtonState();
+            updateActivePaneChrome();
+        }
+    }
+
+    private void setEditorMarkdownReadOnly(boolean readOnly) {
+        if (editor == null) return;
+        if (editorEditableKeyListener == null && editor.getKeyListener() != null) editorEditableKeyListener = editor.getKeyListener();
+        if (readOnly) {
+            editor.setKeyListener(null);
+            editor.setCursorVisible(false);
+            editor.setTextIsSelectable(true);
+            editor.setFocusable(true);
+            editor.setFocusableInTouchMode(true);
+        } else {
+            if (editorEditableKeyListener != null) editor.setKeyListener(editorEditableKeyListener);
+            editor.setCursorVisible(true);
+            editor.setTextIsSelectable(false);
+            editor.setFocusable(true);
+            editor.setFocusableInTouchMode(true);
+        }
+    }
+
+    private void updateMarkdownPreviewButtonState() {
+        if (markdownPreviewButton == null) return;
+        markdownPreviewButton.setBackground(toolbarButtonBackground(markdownPreviewActive));
+        markdownPreviewButton.setTextColor(markdownPreviewActive ? Color.rgb(20, 72, 145) : Color.rgb(30, 42, 58));
+        markdownPreviewButton.setContentDescription(markdownPreviewActive
+                ? "Markdown-Vorschau ausschalten und ursprünglichen RTF-Inhalt anzeigen"
+                : "Markdown aus RTF-Rohtext schreibgeschützt anzeigen");
+    }
+
+    private boolean blockEditorMutationWhileMarkdownPreview() {
+        if (!markdownPreviewActive) return false;
+        status("Markdown-Vorschau ist schreibgeschützt. Button MD noch einmal drücken, dann ist der Ursprungstext wieder bearbeitbar.");
+        return true;
+    }
+
+    private SpannableStringBuilder renderMarkdownPreview(String raw) {
+        SpannableStringBuilder out = new SpannableStringBuilder();
+        String text = raw == null ? "" : raw.replace("\r\n", "\n").replace('\r', '\n');
+        String[] lines = text.split("\n", -1);
+        boolean inFence = false;
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i] == null ? "" : lines[i];
+            String trimmed = line.trim();
+            if (isMarkdownFence(trimmed)) {
+                inFence = !inFence;
+                if (i < lines.length - 1 && out.length() > 0 && out.charAt(out.length() - 1) != '\n') out.append('\n');
+                continue;
+            }
+            int start = out.length();
+            if (inFence) {
+                out.append(line);
+                applyMarkdownCodeSpan(out, start, out.length());
+            } else {
+                appendMarkdownBlockLine(out, line);
+            }
+            if (i < lines.length - 1) out.append('\n');
+        }
+        return out;
+    }
+
+    private boolean isMarkdownFence(String trimmed) {
+        if (trimmed == null) return false;
+        return trimmed.startsWith("```") || trimmed.startsWith("~~~");
+    }
+
+    private void appendMarkdownBlockLine(SpannableStringBuilder out, String line) {
+        String src = line == null ? "" : line;
+        String trimmed = src.trim();
+        if (trimmed.matches("^#{1,6}\\s+.*")) {
+            int level = 0;
+            while (level < trimmed.length() && trimmed.charAt(level) == '#') level++;
+            String content = trimmed.substring(Math.min(trimmed.length(), level)).trim();
+            int start = out.length();
+            appendMarkdownInline(out, content);
+            int end = out.length();
+            if (end > start) {
+                out.setSpan(new StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                float scale = level <= 1 ? 1.45f : (level == 2 ? 1.30f : (level == 3 ? 1.18f : 1.08f));
+                out.setSpan(new RelativeSizeSpan(scale), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            return;
+        }
+        if (trimmed.matches("^([-*_])(?:\\s*\\1){2,}\\s*$")) {
+            out.append("────────────────");
+            return;
+        }
+        if (trimmed.startsWith(">")) {
+            String content = trimmed.substring(1).trim();
+            int start = out.length();
+            appendMarkdownInline(out, content);
+            int end = out.length();
+            if (end > start) {
+                out.setSpan(new QuoteSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                out.setSpan(new LeadingMarginSpan.Standard(dp(12), dp(12)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            return;
+        }
+        Matcher ordered = Pattern.compile("^\\s*(\\d{1,4}[.)])\\s+(.*)$").matcher(src);
+        if (ordered.matches()) {
+            int start = out.length();
+            out.append(ordered.group(1)).append(' ');
+            appendMarkdownInline(out, ordered.group(2));
+            int end = out.length();
+            if (end > start) out.setSpan(new LeadingMarginSpan.Standard(dp(18), dp(18)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            return;
+        }
+        Matcher unordered = Pattern.compile("^\\s*[-+*]\\s+(.*)$").matcher(src);
+        if (unordered.matches()) {
+            int start = out.length();
+            out.append("• ");
+            appendMarkdownInline(out, unordered.group(1));
+            int end = out.length();
+            if (end > start) {
+                out.setSpan(new BulletSpan(dp(8)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                out.setSpan(new LeadingMarginSpan.Standard(dp(18), dp(18)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            return;
+        }
+        appendMarkdownInline(out, src);
+    }
+
+    private void appendMarkdownInline(SpannableStringBuilder out, String text) {
+        if (text == null || text.isEmpty()) return;
+        int i = 0;
+        while (i < text.length()) {
+            char c = text.charAt(i);
+            if (c == '\\' && i + 1 < text.length()) {
+                out.append(text.charAt(i + 1));
+                i += 2;
+                continue;
+            }
+            if (c == '!' && i + 1 < text.length() && text.charAt(i + 1) == '[') {
+                int close = text.indexOf(']', i + 2);
+                int endUrl = close >= 0 && close + 1 < text.length() && text.charAt(close + 1) == '(' ? text.indexOf(')', close + 2) : -1;
+                if (endUrl > close) {
+                    // Markdown images are ignored as images; show only their alt text.
+                    appendMarkdownInline(out, text.substring(i + 2, close));
+                    i = endUrl + 1;
+                    continue;
+                }
+            }
+            if (c == '[') {
+                int close = text.indexOf(']', i + 1);
+                int endUrl = close >= 0 && close + 1 < text.length() && text.charAt(close + 1) == '(' ? text.indexOf(')', close + 2) : -1;
+                if (endUrl > close) {
+                    String label = text.substring(i + 1, close);
+                    String url = text.substring(close + 2, endUrl).trim();
+                    int quote = url.indexOf(' ');
+                    if (quote > 0) url = url.substring(0, quote).trim();
+                    int start = out.length();
+                    appendMarkdownInline(out, label);
+                    int end = out.length();
+                    if (end > start && !url.isEmpty()) out.setSpan(new URLSpan(url), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    i = endUrl + 1;
+                    continue;
+                }
+            }
+            if (c == '`') {
+                int close = text.indexOf('`', i + 1);
+                if (close > i + 1) {
+                    int start = out.length();
+                    out.append(text.substring(i + 1, close));
+                    applyMarkdownCodeSpan(out, start, out.length());
+                    i = close + 1;
+                    continue;
+                }
+            }
+            if (startsWithAt(text, i, "**")) {
+                int close = text.indexOf("**", i + 2);
+                if (close > i + 2) {
+                    int start = out.length();
+                    appendMarkdownInline(out, text.substring(i + 2, close));
+                    int end = out.length();
+                    if (end > start) out.setSpan(new StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    i = close + 2;
+                    continue;
+                }
+            }
+            if (startsWithAt(text, i, "__")) {
+                int close = text.indexOf("__", i + 2);
+                if (close > i + 2) {
+                    int start = out.length();
+                    appendMarkdownInline(out, text.substring(i + 2, close));
+                    int end = out.length();
+                    if (end > start) out.setSpan(new StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    i = close + 2;
+                    continue;
+                }
+            }
+            if (startsWithAt(text, i, "~~")) {
+                int close = text.indexOf("~~", i + 2);
+                if (close > i + 2) {
+                    int start = out.length();
+                    appendMarkdownInline(out, text.substring(i + 2, close));
+                    int end = out.length();
+                    if (end > start) out.setSpan(new StrikethroughSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    i = close + 2;
+                    continue;
+                }
+            }
+            if (c == '*' && !startsWithAt(text, i, "**")) {
+                int close = text.indexOf('*', i + 1);
+                if (close > i + 1 && !startsWithAt(text, close, "**")) {
+                    int start = out.length();
+                    appendMarkdownInline(out, text.substring(i + 1, close));
+                    int end = out.length();
+                    if (end > start) out.setSpan(new StyleSpan(Typeface.ITALIC), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    i = close + 1;
+                    continue;
+                }
+            }
+            if (c == '_' && !startsWithAt(text, i, "__")) {
+                int close = text.indexOf('_', i + 1);
+                if (close > i + 1 && !startsWithAt(text, close, "__")) {
+                    int start = out.length();
+                    appendMarkdownInline(out, text.substring(i + 1, close));
+                    int end = out.length();
+                    if (end > start) out.setSpan(new StyleSpan(Typeface.ITALIC), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    i = close + 1;
+                    continue;
+                }
+            }
+            out.append(c);
+            i++;
+        }
+    }
+
+    private boolean startsWithAt(String text, int index, String token) {
+        return text != null && token != null && index >= 0 && index + token.length() <= text.length() && text.startsWith(token, index);
+    }
+
+    private void applyMarkdownCodeSpan(SpannableStringBuilder out, int start, int end) {
+        if (out == null || end <= start) return;
+        out.setSpan(new TypefaceSpan("monospace"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        out.setSpan(new BackgroundColorSpan(Color.rgb(235, 238, 244)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    }
+
     private void newEmptyDocument() {
         // Entspricht Notizen .NET: alte TreeView vollständig weg, danach ein leerer Startknoten ohne RTF.
         resetToFreshStartDocument("Leere Datei");
@@ -1909,6 +2250,7 @@ public final class MainActivity extends Activity {
     }
 
     private void resetToFreshStartDocument(String message) {
+        clearMarkdownPreviewState(false);
         currentNode = null;
         loadingEditor = true;
         clearVisibleDocumentViewsForFreshStart();
@@ -2936,6 +3278,7 @@ public final class MainActivity extends Activity {
         addMenuAction(labels, actions, "Alles markieren", this::selectAllEditorText);
         addMenuAction(labels, actions, "Bild einfügen…", this::insertImage);
         addMenuAction(labels, actions, "Stiftbild einfügen…", this::insertInkDrawing);
+        addMenuAction(labels, actions, markdownPreviewActive ? "Markdown-Vorschau ausschalten" : "Markdown-Vorschau", this::toggleMarkdownPreview);
         addMenuAction(labels, actions, "Datum einfügen", this::insertDate);
         addMenuAction(labels, actions, "Punkt einfügen", this::insertLegacyBullet);
         addMenuAction(labels, actions, "Normal", () -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_regular")));
@@ -3209,6 +3552,7 @@ public final class MainActivity extends Activity {
     }
 
     private void copyEditorSelectionToClipboard(boolean cut) {
+        if (cut && blockEditorMutationWhileMarkdownPreview()) return;
         if (editor == null || editor.getText() == null) return;
         int[] range = editorSelectionRange(false);
         if (range[1] <= range[0]) {
@@ -3230,6 +3574,7 @@ public final class MainActivity extends Activity {
     }
 
     private void pasteIntoEditorFromClipboard() {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (editor == null || editor.getText() == null) return;
         CharSequence systemText = systemClipboardText();
         CharSequence payload = null;
@@ -3252,6 +3597,7 @@ public final class MainActivity extends Activity {
     }
 
     private void deleteEditorSelectionOrChar() {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (editor == null || editor.getText() == null) return;
         Editable editable = editor.getText();
         int[] range = editorSelectionRange(false);
@@ -3269,6 +3615,7 @@ public final class MainActivity extends Activity {
     }
 
     private void applyEditorParagraphIndent(int direction) {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (editor == null || editor.getText() == null) return;
         Spannable text = editor.getText();
         if (text.length() == 0) {
@@ -3417,6 +3764,7 @@ public final class MainActivity extends Activity {
     }
 
     private void insertDate() {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         String value = LegacyEditorActions.androidDateInsertText(new Date());
         int start = Math.max(0, editor.getSelectionStart());
         int end = Math.max(start, editor.getSelectionEnd());
@@ -3426,6 +3774,7 @@ public final class MainActivity extends Activity {
     }
 
     private void insertLegacyBullet() {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (editor == null) return;
         int start = Math.max(0, editor.getSelectionStart());
         int end = Math.max(start, editor.getSelectionEnd());
@@ -3637,6 +3986,7 @@ public final class MainActivity extends Activity {
     }
 
     private void zoomRtfTextByStep(int direction) {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (editor == null || direction == 0) return;
         setActivePane(ActivePane.RTF_EDITOR);
         Spannable text = editor.getText();
@@ -3766,6 +4116,7 @@ public final class MainActivity extends Activity {
     }
 
     private void applyRtfFormatAction(LegacyRichTextToolbar.ActionSpec spec) {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (spec == null || currentNode == null || editor == null) return;
         if ("legacy_bullet".equals(spec.action)) {
             insertLegacyBullet();
@@ -3853,6 +4204,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showRtfColorPalette(LegacyColorDialogModel.Role role) {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (currentNode == null || editor == null) return;
         String title = role == LegacyColorDialogModel.Role.RTF_HIGHLIGHT ? "RTF-Hintergrundfarbe" : "RTF-Textfarbe";
         String[] palette = LegacyColorDialogModel.paletteLabels();
@@ -3870,6 +4222,7 @@ public final class MainActivity extends Activity {
     }
 
     private void applyRtfColorToSelection(LegacyColorDialogModel.Decision decision) {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (currentNode == null || editor == null || decision == null || !decision.valid) return;
         int[] range = editorSelectionRange(true);
         if (range[1] <= range[0]) {
@@ -3895,6 +4248,7 @@ public final class MainActivity extends Activity {
     }
 
     private void clearRtfColorFromSelection(boolean background) {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (currentNode == null || editor == null) return;
         int[] range = editorSelectionRange(true);
         if (range[1] <= range[0]) {
@@ -3913,6 +4267,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showFontFamilyDialog() {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (currentNode == null || editor == null) return;
         if (shouldFormatTreeTarget()) {
             showTreeFontFamilyDialog();
@@ -3928,6 +4283,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showFontSizeDialog() {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (currentNode == null || editor == null) return;
         if (shouldFormatTreeTarget()) {
             showTreeFontSizeDialog();
@@ -3977,6 +4333,7 @@ public final class MainActivity extends Activity {
     }
 
     private void applyFontFamilyToSelection(String family) {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (currentNode == null || editor == null) return;
         int[] range = editorSelectionRange(true);
         if (range[1] <= range[0]) {
@@ -3992,6 +4349,7 @@ public final class MainActivity extends Activity {
     }
 
     private void applyFontSizeToSelection(int size) {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (currentNode == null || editor == null) return;
         int clamped = LegacyRichTextToolbar.normalizeFontSize(size);
         int[] range = editorSelectionRange(true);
@@ -4007,6 +4365,7 @@ public final class MainActivity extends Activity {
     }
 
     private void applyAlignmentToSelection(String action) {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (editor == null) return;
         Spannable text = editor.getText();
         if (text.length() == 0) return;
@@ -4171,6 +4530,7 @@ public final class MainActivity extends Activity {
     }
 
     private void undoEditorChange() {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (editorUndoStack.isEmpty()) {
             toast("Keine RTF-Änderung zum Rückgängigmachen.");
             return;
@@ -4185,6 +4545,7 @@ public final class MainActivity extends Activity {
     }
 
     private void redoEditorChange() {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (editorRedoStack.isEmpty()) {
             toast("Keine RTF-Änderung zum Wiederholen.");
             return;
@@ -4221,6 +4582,11 @@ public final class MainActivity extends Activity {
     }
 
     private void markEditorRichChanged(String message) {
+        if (markdownPreviewActive) {
+            editorDirty = false;
+            updateMarkdownPreviewButtonState();
+            return;
+        }
         editorDirty = true;
         if (!editorHistoryRestoring) editorRedoStack.clear();
         if (document != null) markDocumentChanged();
@@ -4230,11 +4596,13 @@ public final class MainActivity extends Activity {
     }
 
     private void insertImage() {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (currentNode == null) return;
         startActivityForResult(intentForDialog(LegacyFileDialogModel.insertImage(currentDialogDirectory())), REQ_INSERT_IMAGE);
     }
 
     private void insertInkDrawing() {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (currentNode == null || editor == null) return;
         setActivePane(ActivePane.RTF_EDITOR);
         final InkCanvasView ink = new InkCanvasView(this);
@@ -4290,6 +4658,7 @@ public final class MainActivity extends Activity {
     }
 
     private void insertImageFromUri(Uri uri) {
+        if (blockEditorMutationWhileMarkdownPreview()) return;
         if (currentNode == null || uri == null || editor == null) return;
         try {
             PreparedImage image = prepareImageForRtf(uri);
@@ -5326,6 +5695,7 @@ public final class MainActivity extends Activity {
     private void selectNode(NoteNode node, boolean focusEditor) {
         if (node == null) return;
         saveCurrentEditorToNode();
+        if (markdownPreviewActive) clearMarkdownPreviewState(false);
         currentNode = node;
         LegacyEditorNodeSync.LoadState loaded = LegacyEditorNodeSync.load(node);
         loadingEditor = true;
@@ -5359,7 +5729,11 @@ public final class MainActivity extends Activity {
         String oldRtf = currentNode.rtf == null ? "" : currentNode.rtf;
         String nextTitle = titleDirty ? LegacyEditorNodeSync.normalizeTitle(titleEdit == null ? currentNode.title : titleEdit.getText().toString()) : oldTitle;
         String nextRtf = oldRtf;
-        if (editorDirty) {
+        if (markdownPreviewActive && markdownPreviewNode == currentNode) {
+            // The editor currently contains rendered Markdown preview text, not the
+            // editable note body.  Never serialize that preview back to RTF.
+            editorDirty = false;
+        } else if (editorDirty) {
             if (shouldIgnoreTransientBlankEditorOverwrite(oldRtf)) {
                 editorDirty = false;
             } else {

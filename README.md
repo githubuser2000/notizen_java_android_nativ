@@ -409,7 +409,7 @@ GPLv3, passend zu den Ausgangsarchiven.
 
 ## v108
 
-- Version erhöht auf `versionCode 109` / `versionName 1.0.109-java-android-nativ`.
+- Version erhöht auf `versionCode 108` / `versionName 1.0.108-java-android-nativ`.
 - Haftnotizen/Widgets wurden Android-gerechter weitergeführt: Widgets merken jetzt den ALX-Knotenpfad, Dokumentnamen, Farben und Textgröße und können beim Speichern anhand des aktuellen Dokuments aktualisiert werden. Tippen auf ein Widget öffnet die App wieder beim passenden Knoten.
 - Die Widget-Liste wurde ausgebaut: vorhandene Startbildschirm-Widgets können angezeigt werden; die Aktion `Haftliste` nutzt diese Übersicht.
 - Export, Teilen und Drucken wurden in einen gemeinsamen `Export`-Dialog zusammengeführt: aktueller Knoten, aktueller Teilbaum oder ganzer Baum können als TXT, ANSI-TXT, Unicode-TXT, HTML oder RTF gespeichert oder über Android geteilt werden.
@@ -430,3 +430,13 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Widget-Bildvorschauen werden als kleine interne JPEG-Dateien abgelegt, nicht als große Base64-Daten in Preferences.
 - Widget-Bilder werden begrenzt und speicherschonend dekodiert, damit große RTF-Bilder das Widget-Update nicht zum Absturz bringen.
 - Neue Kernklasse `LegacyInkPictureModel` und begrenzte RTF-Bildextraktion `RtfUtils.extractImagesLimited`.
+
+
+## v110
+
+- Version erhöht auf `versionCode 110` / `versionName 1.0.110-java-android-nativ`.
+- Neuer Button `Markdown`/`MD` in der RTF-Textleiste: erkennt Markdown im aus RTF gewonnenen Rohtext und zeigt es schreibgeschützt gerendert direkt in der RTF-Box.
+- Der Markdown-Modus ignoriert RTF-Textformatierung und RTF-Bilder für die Erkennung/Vorschau, indem zuerst in Rohtext umgewandelt und Bild-/Objekt-Platzhalter entfernt werden.
+- Nochmaliges Drücken des Markdown-Buttons stellt den ursprünglichen RTF-Editorinhalt wieder her.
+- Speichern während aktiver Markdown-Vorschau überschreibt den Knoten nicht mit Vorschautext; vorhandenes RTF, Formatierungen und Bilder bleiben erhalten.
+- Neue Kernklasse `LegacyMarkdownPreviewModel` mit Rohtextbereinigung, Markdown-Erkennung und Statusmodell.
