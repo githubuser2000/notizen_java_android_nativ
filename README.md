@@ -459,7 +459,13 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Version: `versionCode 112` / `versionName 1.0.112-java-android-nativ`.
 
 ### v113
-- Langdruck-Verhalten gezielt geändert: In der RTF-Box wird beim normalen Gedrückthalten wieder nur das Wort markiert; das eigene Android-Kontextmenü erscheint erst nach 6 Sekunden dauerhaftem Halten.
-- Baum-Langdruck klappt Knoten wieder wie früher auf/zu; das Baum-Kontextmenü erscheint erst nach 6 Sekunden dauerhaftem Halten.
+- Langdruck-Verhalten gezielt geändert: In der RTF-Box wird beim normalen Gedrückthalten wieder nur das Wort markiert; das eigene Android-Kontextmenü erschien erst nach 6 Sekunden dauerhaftem Halten.
+- Baum-Langdruck klappt Knoten wieder wie früher auf/zu; das Baum-Kontextmenü erschien erst nach 6 Sekunden dauerhaftem Halten.
 - Die verzögerten Kontextmenüs werden bei Loslassen, Scrollbewegung, Mehrfinger-Geste oder Abbruch wieder verworfen.
 - Version erhöht auf `versionCode 113` / `versionName 1.0.113-java-android-nativ`.
+
+### v114
+- Die Verzögerung für beide verzögerten Kontextmenüs wurde von 6 Sekunden auf 4 Sekunden reduziert.
+- Rückkehr aus der Markdown-WebView-Vorschau härtet den echten RTF-Editor: KeyListener/InputType, Fokus, sichtbarer Cursor, Auswahlfarbe und Cursor-Zeichnung werden explizit wiederhergestellt.
+- Die RTF-Auswahl bleibt nach dem Ausschalten der Markdown-Vorschau wieder sichtbar, damit man erkennt, wie viel Text markiert ist.
+- Version erhöht auf `versionCode 114` / `versionName 1.0.114-java-android-nativ`.

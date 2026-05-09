@@ -205,7 +205,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.113-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.114-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -339,11 +339,12 @@ public final class MainActivity extends Activity {
     private int markdownPreviewReturnScrollX = 0;
     private int markdownPreviewReturnScrollY = 0;
     private KeyListener editorEditableKeyListener;
+    private int editorEditableInputType = -1;
     private NoteNode treeDragSource;
     private NoteNode treeDragPreviewTarget;
     private TreeListAdapter.DropPreview treeDragPreviewMode = TreeListAdapter.DropPreview.NONE;
     private long lastEditorTypingUndoAt = 0L;
-    private static final long DELAYED_CONTEXT_MENU_MS = 6000L;
+    private static final long DELAYED_CONTEXT_MENU_MS = 4000L;
     private Runnable delayedEditorContextRunnable;
     private Runnable delayedTreeContextRunnable;
     private boolean editorLongPressArmed = false;
@@ -1162,11 +1163,13 @@ public final class MainActivity extends Activity {
 
         editor = new TrackingEditText(this);
         editorEditableKeyListener = editor.getKeyListener();
+        editorEditableInputType = editor.getInputType();
         editor.setTextSize(settings == null ? 17f : LegacySettings.normalizeAndroidEditorTextSp(settings.androidEditorTextSp));
         editor.setGravity(Gravity.TOP | Gravity.START);
         editor.setMinLines(12);
         editor.setSingleLine(false);
         editor.setHorizontallyScrolling(false);
+        restoreEditorSelectionVisuals();
         editor.setBackground(roundedBackground(Color.WHITE, Color.rgb(213, 219, 229), 8));
         applyEditorScrollbars();
         editor.setPadding(dp(10), dp(10), dp(10), dp(10));
@@ -2301,49 +2304,81 @@ public final class MainActivity extends Activity {
         int s = start >= 0 ? Math.max(0, Math.min(start, len)) : len;
         int e = end >= 0 ? Math.max(s, Math.min(end, len)) : s;
         editor.setVisibility(View.VISIBLE);
+        restoreEditorEditableState();
+        editor.requestFocus();
+        if (editor.getParent() instanceof ViewGroup) {
+            try { ((ViewGroup) editor.getParent()).requestChildFocus(editor, editor); } catch (Exception ignored) {}
+        }
+        try { editor.setSelection(s, e); } catch (Exception ignored) {}
+        editor.scrollTo(Math.max(0, scrollX), Math.max(0, scrollY));
+        restartEditorInputAndCursor();
+        setFormatTarget(FormatTarget.RTF_EDITOR);
+        editor.post(() -> {
+            restoreEditorSelectionAfterMarkdownPost(s, e, scrollX, scrollY);
+        });
+        if (mainHandler != null) {
+            mainHandler.postDelayed(() -> restoreEditorSelectionAfterMarkdownPost(s, e, scrollX, scrollY), 120L);
+        }
+    }
+
+    private void restoreEditorSelectionAfterMarkdownPost(int s, int e, int scrollX, int scrollY) {
+        if (editor == null) return;
+        editor.setVisibility(View.VISIBLE);
+        restoreEditorEditableState();
+        editor.requestFocus();
+        int postLen = editor.getText() == null ? 0 : editor.getText().length();
+        int ps = Math.max(0, Math.min(s, postLen));
+        int pe = Math.max(ps, Math.min(e, postLen));
+        try { editor.setSelection(ps, pe); } catch (Exception ignored) {}
+        editor.scrollTo(Math.max(0, scrollX), Math.max(0, scrollY));
+        restartEditorInputAndCursor();
+        editor.invalidate();
+    }
+
+    private void restoreEditorEditableState() {
+        if (editor == null) return;
         editor.setEnabled(true);
         editor.setFocusable(true);
         editor.setFocusableInTouchMode(true);
-        editor.setTextIsSelectable(false);
+        if (editorEditableInputType > 0) editor.setRawInputType(editorEditableInputType);
         if (editorEditableKeyListener != null) editor.setKeyListener(editorEditableKeyListener);
+        restoreEditorSelectionVisuals();
         editor.setCursorVisible(true);
-        editor.requestFocus();
-        editor.setSelection(s, e);
-        editor.scrollTo(Math.max(0, scrollX), Math.max(0, scrollY));
-        setFormatTarget(FormatTarget.RTF_EDITOR);
-        editor.post(() -> {
-            if (editor == null) return;
-            editor.setVisibility(View.VISIBLE);
-            editor.setEnabled(true);
-            editor.setFocusable(true);
-            editor.setFocusableInTouchMode(true);
-            editor.setTextIsSelectable(false);
-            if (editorEditableKeyListener != null) editor.setKeyListener(editorEditableKeyListener);
-            editor.setCursorVisible(true);
-            editor.requestFocus();
-            int postLen = editor.getText() == null ? 0 : editor.getText().length();
-            int ps = Math.max(0, Math.min(s, postLen));
-            int pe = Math.max(ps, Math.min(e, postLen));
-            try { editor.setSelection(ps, pe); } catch (Exception ignored) {}
-        });
+    }
+
+    private void restoreEditorSelectionVisuals() {
+        if (editor == null) return;
+        editor.setHighlightColor(Color.argb(115, 74, 133, 216));
+        if (Build.VERSION.SDK_INT >= 29) {
+            GradientDrawable cursor = new GradientDrawable();
+            cursor.setColor(Color.rgb(20, 72, 145));
+            cursor.setSize(Math.max(1, dp(2)), Math.max(18, dp(24)));
+            try { editor.setTextCursorDrawable(cursor); } catch (Exception ignored) {}
+        }
+    }
+
+    private void restartEditorInputAndCursor() {
+        if (editor == null) return;
+        editor.setCursorVisible(false);
+        editor.setCursorVisible(true);
+        try {
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.restartInput(editor);
+        } catch (Exception ignored) {}
     }
 
     private void setEditorMarkdownReadOnly(boolean readOnly) {
         if (editor == null) return;
         if (editorEditableKeyListener == null && editor.getKeyListener() != null) editorEditableKeyListener = editor.getKeyListener();
+        if (editorEditableInputType <= 0) editorEditableInputType = editor.getInputType();
         if (readOnly) {
-            editor.setKeyListener(null);
+            // The actual Markdown preview is a separate WebView. Do not switch the
+            // hidden EditText into Android's selectable/read-only mode: that mode
+            // can leave the cursor and selection overlay invisible when returning.
             editor.setCursorVisible(false);
-            editor.setTextIsSelectable(true);
-            editor.setFocusable(true);
-            editor.setFocusableInTouchMode(true);
+            editor.clearFocus();
         } else {
-            editor.setEnabled(true);
-            editor.setTextIsSelectable(false);
-            if (editorEditableKeyListener != null) editor.setKeyListener(editorEditableKeyListener);
-            editor.setFocusable(true);
-            editor.setFocusableInTouchMode(true);
-            editor.setCursorVisible(true);
+            restoreEditorEditableState();
         }
     }
 
