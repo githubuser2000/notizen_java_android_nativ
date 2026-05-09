@@ -457,3 +457,9 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Markdown-Rohtext wird weiter aus RTF extrahiert; RTF-Bilder und Formatierungen werden für die Vorschau ignoriert und beim Speichern nicht überschrieben.
 - Rückkehr aus der Markdown-Vorschau stellt den echten RTF-Editor sichtbar, fokussierbar und mit sichtbarem Cursor wieder her.
 - Version: `versionCode 112` / `versionName 1.0.112-java-android-nativ`.
+
+### v113
+- Langdruck-Verhalten gezielt geändert: In der RTF-Box wird beim normalen Gedrückthalten wieder nur das Wort markiert; das eigene Android-Kontextmenü erscheint erst nach 6 Sekunden dauerhaftem Halten.
+- Baum-Langdruck klappt Knoten wieder wie früher auf/zu; das Baum-Kontextmenü erscheint erst nach 6 Sekunden dauerhaftem Halten.
+- Die verzögerten Kontextmenüs werden bei Loslassen, Scrollbewegung, Mehrfinger-Geste oder Abbruch wieder verworfen.
+- Version erhöht auf `versionCode 113` / `versionName 1.0.113-java-android-nativ`.

@@ -205,7 +205,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.112-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.113-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -343,6 +343,19 @@ public final class MainActivity extends Activity {
     private NoteNode treeDragPreviewTarget;
     private TreeListAdapter.DropPreview treeDragPreviewMode = TreeListAdapter.DropPreview.NONE;
     private long lastEditorTypingUndoAt = 0L;
+    private static final long DELAYED_CONTEXT_MENU_MS = 6000L;
+    private Runnable delayedEditorContextRunnable;
+    private Runnable delayedTreeContextRunnable;
+    private boolean editorLongPressArmed = false;
+    private boolean treeLongPressArmed = false;
+    private float editorLongDownX = 0f;
+    private float editorLongDownY = 0f;
+    private float editorLastTouchX = 0f;
+    private float editorLastTouchY = 0f;
+    private float treeLongDownX = 0f;
+    private float treeLongDownY = 0f;
+    private NoteNode treeLongContextNode;
+    private int treeLongContextPosition = AdapterView.INVALID_POSITION;
     private final Map<String, TextView> textToolbarActionButtons = new LinkedHashMap<>();
 
     private interface PasswordCallback { void onPassword(String password); }
@@ -878,12 +891,16 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onPause() {
+        cancelDelayedEditorContextMenu();
+        cancelDelayedTreeContextMenu();
         flushAndroidUiZoomSettingsNow();
         saveRuntimeSnapshotNow(true);
         super.onPause();
     }
 
     @Override protected void onStop() {
+        cancelDelayedEditorContextMenu();
+        cancelDelayedTreeContextMenu();
         flushAndroidUiZoomSettingsNow();
         saveRuntimeSnapshotNow(true);
         super.onStop();
@@ -892,6 +909,8 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         flushAndroidUiZoomSettingsNow();
         saveRuntimeSnapshotNow(true);
+        cancelDelayedEditorContextMenu();
+        cancelDelayedTreeContextMenu();
         if (mainHandler != null && autosaveRunnable != null) mainHandler.removeCallbacks(autosaveRunnable);
         if (mainHandler != null && runtimeSnapshotRunnable != null) mainHandler.removeCallbacks(runtimeSnapshotRunnable);
         if (mainHandler != null && androidUiZoomSaveRunnable != null) mainHandler.removeCallbacks(androidUiZoomSaveRunnable);
@@ -1063,9 +1082,15 @@ public final class MainActivity extends Activity {
         treeList.setAdapter(treeAdapter);
         final float[] lastTreeTouchX = new float[]{-1f};
         treeList.setOnTouchListener((view, event) -> {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
                 lastTreeTouchX[0] = event.getX();
                 setActivePane(ActivePane.TREE_NODE);
+                armDelayedTreeContextMenu(event);
+            } else if (action == MotionEvent.ACTION_MOVE) {
+                updateDelayedTreeContextMenu(event);
+            } else if (action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                cancelDelayedTreeContextMenu();
             }
             return handleTreePinchTouch(event);
         });
@@ -1088,9 +1113,7 @@ public final class MainActivity extends Activity {
             setActivePane(ActivePane.TREE_NODE);
             treeList.requestFocus();
             selectNode(node, false);
-            int gripEdge = dp(42 + row.depth * 22);
-            if (lastTreeTouchX[0] >= 0f && lastTreeTouchX[0] <= gripEdge) beginTreeDragFromRow(view, node);
-            else showTreeContextMenu(node);
+            toggleNodeExpanded(node, true);
             return true;
         });
         treeList.setOnDragListener((view, event) -> handleTreeDragEvent(event));
@@ -1149,12 +1172,21 @@ public final class MainActivity extends Activity {
         editor.setPadding(dp(10), dp(10), dp(10), dp(10));
         editor.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setActivePane(ActivePane.RTF_EDITOR); });
         editor.setOnTouchListener((view, event) -> {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setActivePane(ActivePane.RTF_EDITOR);
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                setActivePane(ActivePane.RTF_EDITOR);
+                armDelayedEditorContextMenu(event);
+            } else if (action == MotionEvent.ACTION_MOVE) {
+                updateDelayedEditorContextMenu(event);
+            } else if (action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                cancelDelayedEditorContextMenu();
+            }
             return handleEditorPinchTouch(event);
         });
         editor.setOnLongClickListener(view -> {
             setActivePane(ActivePane.RTF_EDITOR);
-            showEditorContextMenu();
+            editor.requestFocus();
+            selectEditorWordAtLastTouch();
             return true;
         });
         editor.addTextChangedListener(new SimpleWatcher() {
@@ -1487,6 +1519,129 @@ public final class MainActivity extends Activity {
 
         abstract void onStep(int direction);
         void onGestureFinished() {}
+    }
+
+    private void ensureMainHandler() {
+        if (mainHandler == null) mainHandler = new Handler(Looper.getMainLooper());
+    }
+
+    private void armDelayedEditorContextMenu(MotionEvent event) {
+        if (event == null || editor == null) return;
+        cancelDelayedEditorContextMenu();
+        editorLongPressArmed = true;
+        editorLongDownX = event.getX();
+        editorLongDownY = event.getY();
+        editorLastTouchX = editorLongDownX;
+        editorLastTouchY = editorLongDownY;
+        ensureMainHandler();
+        delayedEditorContextRunnable = () -> {
+            if (!editorLongPressArmed || editor == null || editor.getVisibility() != View.VISIBLE) return;
+            editorLongPressArmed = false;
+            delayedEditorContextRunnable = null;
+            setActivePane(ActivePane.RTF_EDITOR);
+            editor.requestFocus();
+            showEditorContextMenu();
+        };
+        mainHandler.postDelayed(delayedEditorContextRunnable, DELAYED_CONTEXT_MENU_MS);
+    }
+
+    private void updateDelayedEditorContextMenu(MotionEvent event) {
+        if (!editorLongPressArmed || event == null) return;
+        editorLastTouchX = event.getX();
+        editorLastTouchY = event.getY();
+        if (event.getPointerCount() > 1 || movedTooFar(event.getX(), event.getY(), editorLongDownX, editorLongDownY)) {
+            cancelDelayedEditorContextMenu();
+        }
+    }
+
+    private void cancelDelayedEditorContextMenu() {
+        editorLongPressArmed = false;
+        if (mainHandler != null && delayedEditorContextRunnable != null) mainHandler.removeCallbacks(delayedEditorContextRunnable);
+        delayedEditorContextRunnable = null;
+    }
+
+    private boolean selectEditorWordAtLastTouch() {
+        if (editor == null) return false;
+        Editable text = editor.getText();
+        int length = text == null ? 0 : text.length();
+        if (length <= 0) return false;
+        int offset;
+        try {
+            offset = editor.getOffsetForPosition(editorLastTouchX, editorLastTouchY);
+        } catch (RuntimeException ex) {
+            offset = editor.getSelectionStart();
+        }
+        if (offset < 0) offset = 0;
+        if (offset >= length) offset = length - 1;
+        if (!isEditorWordChar(text.charAt(offset)) && offset > 0 && isEditorWordChar(text.charAt(offset - 1))) offset--;
+        if (!isEditorWordChar(text.charAt(offset))) {
+            int cursor = Math.max(0, Math.min(length, offset));
+            editor.setSelection(cursor);
+            return false;
+        }
+        int start = offset;
+        int end = offset + 1;
+        while (start > 0 && isEditorWordChar(text.charAt(start - 1))) start--;
+        while (end < length && isEditorWordChar(text.charAt(end))) end++;
+        editor.setSelection(start, end);
+        return true;
+    }
+
+    private boolean isEditorWordChar(char ch) {
+        return Character.isLetterOrDigit(ch) || ch == '_';
+    }
+
+    private void armDelayedTreeContextMenu(MotionEvent event) {
+        if (event == null || treeList == null || treeAdapter == null) return;
+        cancelDelayedTreeContextMenu();
+        int position = treeList.pointToPosition(Math.round(event.getX()), Math.round(event.getY()));
+        if (position == AdapterView.INVALID_POSITION) return;
+        TreeListAdapter.FlatNode row = treeAdapter.getItem(position);
+        if (row == null || row.node == null) return;
+        treeLongPressArmed = true;
+        treeLongDownX = event.getX();
+        treeLongDownY = event.getY();
+        treeLongContextNode = row.node;
+        treeLongContextPosition = position;
+        ensureMainHandler();
+        delayedTreeContextRunnable = () -> {
+            if (!treeLongPressArmed || treeLongContextNode == null || treeList == null) return;
+            NoteNode node = treeLongContextNode;
+            treeLongPressArmed = false;
+            delayedTreeContextRunnable = null;
+            setActivePane(ActivePane.TREE_NODE);
+            treeList.requestFocus();
+            selectNode(node, false);
+            showTreeContextMenu(node);
+        };
+        mainHandler.postDelayed(delayedTreeContextRunnable, DELAYED_CONTEXT_MENU_MS);
+    }
+
+    private void updateDelayedTreeContextMenu(MotionEvent event) {
+        if (!treeLongPressArmed || event == null) return;
+        if (event.getPointerCount() > 1 || movedTooFar(event.getX(), event.getY(), treeLongDownX, treeLongDownY)) {
+            cancelDelayedTreeContextMenu();
+            return;
+        }
+        if (treeList != null) {
+            int position = treeList.pointToPosition(Math.round(event.getX()), Math.round(event.getY()));
+            if (position == AdapterView.INVALID_POSITION || position != treeLongContextPosition) cancelDelayedTreeContextMenu();
+        }
+    }
+
+    private void cancelDelayedTreeContextMenu() {
+        treeLongPressArmed = false;
+        treeLongContextNode = null;
+        treeLongContextPosition = AdapterView.INVALID_POSITION;
+        if (mainHandler != null && delayedTreeContextRunnable != null) mainHandler.removeCallbacks(delayedTreeContextRunnable);
+        delayedTreeContextRunnable = null;
+    }
+
+    private boolean movedTooFar(float x, float y, float startX, float startY) {
+        float dx = x - startX;
+        float dy = y - startY;
+        float limit = dp(36);
+        return dx * dx + dy * dy > limit * limit;
     }
 
     private void initPinchGestureDetectors() {

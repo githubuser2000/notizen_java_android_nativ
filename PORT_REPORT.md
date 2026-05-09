@@ -450,3 +450,9 @@ Neu hinzugekommen sind `LegacyFontSetModel`, `LegacyWindowMoveResizeModel` und `
 - Markdown-Preview-Bridge erweitert: WebView-HTML-Vorschau im RTF-Bereich statt reiner Spannable-Vorschau.
 - Unterstützt jetzt insbesondere Markdown-Tabellen, Ausrichtung, Aufgabenlisten, Referenzlinks, Blockquotes, Codeblöcke und Fußnoten-Vorschau.
 - Cursor-/Fokus-Wiederherstellung nach dem Ausschalten der Markdown-Vorschau gehärtet.
+
+### v113
+- Langdruck-Verhalten gezielt geändert: In der RTF-Box wird beim normalen Gedrückthalten wieder nur das Wort markiert; das eigene Android-Kontextmenü erscheint erst nach 6 Sekunden dauerhaftem Halten.
+- Baum-Langdruck klappt Knoten wieder wie früher auf/zu; das Baum-Kontextmenü erscheint erst nach 6 Sekunden dauerhaftem Halten.
+- Die verzögerten Kontextmenüs werden bei Loslassen, Scrollbewegung, Mehrfinger-Geste oder Abbruch wieder verworfen.
+- Version erhöht auf `versionCode 113` / `versionName 1.0.113-java-android-nativ`.
