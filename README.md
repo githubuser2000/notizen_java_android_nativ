@@ -303,14 +303,33 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Obere Toolbar ergänzt um direkte Formatbuttons `Fett`, `Kursiv`, `Größer`, `Kleiner`, `Schriftart` und `Größe`, damit die wichtigsten RTF-Aktionen ohne Unterdialog erreichbar sind.
 - Tablet-Drehung verliert Baum und RTF-Inhalt nicht mehr: Dokument, aktueller Knoten, Auswahl, Dateiziel, Settings und Status werden über `onRetainNonConfigurationInstance()` gehalten und nach dem Neuaufbau der Oberfläche wiederhergestellt.
 - Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`.
+
 ## v98
 
 - Version erhöht auf `versionCode 98` / `versionName 1.0.98-java-android-nativ`.
-- ALX-Baumzustand wird beim Laden jetzt sichtbar übernommen: offene und geschlossene Knoten aus `isexpanded` sowie Aliasformen wie `isExpanded`, `IsExpanded` und `expanded` werden gelesen und beim Speichern wieder als kanonisches `isexpanded` geschrieben.
-- Nach dem Öffnen zeigt die Statuszeile eine kurze Baumzustands-Zusammenfassung, damit sofort klar ist, dass der ALX-Auf-/Zuklappzustand übernommen wurde.
+- ALX-Baumzustand wird beim Laden sichtbar übernommen: offene und geschlossene Knoten aus `isexpanded` sowie Aliasformen wie `isExpanded`, `IsExpanded` und `expanded` werden gelesen und beim Speichern wieder als kanonisches `isexpanded` geschrieben.
 - Obere Toolbar neu geordnet in drei horizontale Listen: `Datei`, `Baum` und `Text`. Alle Toolbar-Schaltflächen sind quadratisch und nutzen kompaktere Icon-/Glyph-Darstellung mit Tooltip/Accessibility-Text.
-- Textformat-Buttons `Fett`, `Kursiv`, `Größer`, `Kleiner`, `Schriftart` und `Größe` haben eigene Icon-Mappings bekommen.
 - Baum- und Editorbereich in breiter Ansicht haben einen ziehbaren Trenner. Die Baumbreite kann mit dem Finger stark verkleinert oder vergrößert werden und wird in der Android-Config gespeichert.
 - Baumdarstellung optisch geglättet: hellere Zeilenflächen, abgerundete Auswahl und klarere Auf-/Zu-Markierungen.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
+
+## v99
+
+- Version erhöht auf `versionCode 99` / `versionName 1.0.99-java-android-nativ`.
+- Die sichtbare Programmnamens-Überschrift wurde aus dem Hauptlayout entfernt, damit Baum und RTF-Editor höher stehen.
+- Die Dateiquellenzeile zwischen Toolbar und Baum/RTF-Box wurde entfernt; der Fenstertitel bleibt intern für Android/Diagnose erhalten.
+- Die untere dauerhafte Statusleiste wurde entfernt. Meldungen wie `Ansicht wiederhergestellt` belegen damit keinen Bildschirmplatz mehr.
+- Die drei oberen Buttonleisten bleiben erhalten, sind aber deutlich kompakter: Toolbar-Buttons und Leisten-Badges sind jetzt 24 dp breit und 24 dp hoch statt 48 dp.
+- Die Icon-Buttons wurden optisch geglättet: kleinere abgerundete Kacheln, weniger Außenabstand, kompaktere Glyph-Größen, Ripple-Maske und kleine Erhebung.
+- Die Mindestbreite des Baumfensters wurde von 56 dp auf 24 dp reduziert, damit der Finger-Trenner den Bereich noch freier verkleinern kann.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
+
+## v100
+
+- Version erhöht auf `versionCode 100` / `versionName 1.0.100-java-android-nativ`.
+- Die beiden hellgelben Kopfleisten über Baum und RTF-Editor haben jetzt eine gemeinsame feste Höhe und sind in der breiten Ansicht sauber auf gleicher Linie; der Trenner füllt die Kopfhöhe passend, damit die Leisten optisch direkt nebeneinander laufen.
+- Der Farbpaletten-Button in der Textleiste öffnet jetzt direkt die RTF-Textfarbpalette. Die gewählte Farbe wird als `ForegroundColorSpan` sichtbar auf die aktuelle Auswahl angewendet und beim Speichern wieder als RTF-Farbtabelle/`\cf` geschrieben; Hintergrundfarbe und Knotenfarben bleiben über Zusatzoptionen erreichbar.
+- Ein app-interner Laufzeit-Schnappschuss schützt Baum und RTF-Inhalt bei Abstürzen oder Prozessverlust: Änderungen werden verzögert, bei Pause/Stop/Destroy und im Crash-Handler als private ALX-XML-Sicherung abgelegt und beim Neustart wieder ausgewählt geladen.
+- Die Speichernachfrage vor dem Laden/Neuanlegen wird für einen leeren Ein-Knoten-Startbaum ohne sichtbaren RTF-Text unterdrückt.
 - Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
 

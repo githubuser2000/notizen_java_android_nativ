@@ -183,14 +183,18 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.98-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.100-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
 
-    private static final int TOOLBAR_BUTTON_DP = 48;
-    private static final int TOOLBAR_BUTTON_MARGIN_DP = 3;
+    private static final int TOOLBAR_BUTTON_DP = 24;
+    private static final int TOOLBAR_BUTTON_MARGIN_DP = 1;
     private static final int TREE_PANE_DEFAULT_DP = 280;
-    private static final int TREE_PANE_MIN_DP = 56;
-    private static final int EDITOR_PANE_MIN_DP = 96;
+    private static final int TREE_PANE_MIN_DP = 24;
+    private static final int EDITOR_PANE_MIN_DP = 56;
+    private static final int CONTENT_HEADER_DP = 34;
+    private static final long RUNTIME_SNAPSHOT_DELAY_MS = 700L;
+    private static final String RUNTIME_SNAPSHOT_FILE = "notizen.runtime-snapshot.xml";
+    private static final String RUNTIME_SNAPSHOT_META_FILE = "notizen.runtime-snapshot.meta";
 
     private static final int REQ_OPEN = 1001;
     private static final int REQ_SAVE_AS = 1002;
@@ -231,11 +235,12 @@ public final class MainActivity extends Activity {
     private TextView rootTitleView;
     private EditText titleEdit;
     private EditText editor;
-    private TextView statusView;
-    private TextView fileView;
     private WebView pendingPrintView;
     private Runnable autosaveRunnable;
+    private Runnable runtimeSnapshotRunnable;
+    private Thread.UncaughtExceptionHandler previousUncaughtExceptionHandler;
     private boolean autosaveInFlight = false;
+    private boolean runtimeSnapshotRestored = false;
 
     private boolean loadingEditor = false;
     private boolean editorDirty = false;
@@ -264,7 +269,6 @@ public final class MainActivity extends Activity {
         boolean editorHorizontallyScrolling;
         int selectionStart;
         int selectionEnd;
-        String statusText;
         int treePaneWidthDp;
     }
 
@@ -306,6 +310,7 @@ public final class MainActivity extends Activity {
         RetainedState retained = null;
         Object last = getLastNonConfigurationInstance();
         if (last instanceof RetainedState) retained = (RetainedState) last;
+        boolean hasOpenIntent = isOpenDocumentIntent(getIntent());
         if (retained != null) {
             document = retained.document == null ? NoteDocument.newDocument() : retained.document;
             currentNode = retained.currentNode;
@@ -320,9 +325,11 @@ public final class MainActivity extends Activity {
         } else {
             settings = AndroidSettingsStore.load(this);
             treePaneWidthDp = LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
+            if (!hasOpenIntent) runtimeSnapshotRestored = restoreRuntimeSnapshotIfPresent();
         }
         ioExecutor = Executors.newSingleThreadExecutor();
         mainHandler = new Handler(Looper.getMainLooper());
+        installCrashSnapshotHandler();
         buildUi();
         requestNotificationPermissionIfUseful();
         if (retained != null) {
@@ -333,19 +340,19 @@ public final class MainActivity extends Activity {
                 int end = Math.max(start, Math.min(retained.selectionEnd, editor.getText().length()));
                 editor.setSelection(start, end);
             }
-            if (statusView != null && retained.statusText != null && !retained.statusText.isEmpty()) statusView.setText(retained.statusText);
             updateTitle();
-            status("Ansicht wiederhergestellt");
         } else {
-            selectNode(document.ensureRoot(), false);
+            selectNode(currentNode == null ? document.ensureRoot() : currentNode, false);
             boolean openedByIntent = handleViewIntent(getIntent());
             if (!openedByIntent) consumeOpenOnceFileIfPresent();
         }
         scheduleAutosaveTick();
+        scheduleRuntimeSnapshotSave();
     }
 
     @Override public Object onRetainNonConfigurationInstance() {
         saveCurrentEditorToNode();
+        saveRuntimeSnapshotNow(false);
         RetainedState retained = new RetainedState();
         retained.document = document;
         retained.currentNode = currentNode;
@@ -358,13 +365,25 @@ public final class MainActivity extends Activity {
         retained.editorHorizontallyScrolling = editorHorizontallyScrolling;
         retained.selectionStart = editor == null ? 0 : Math.max(0, editor.getSelectionStart());
         retained.selectionEnd = editor == null ? retained.selectionStart : Math.max(retained.selectionStart, editor.getSelectionEnd());
-        retained.statusText = statusView == null ? "" : statusView.getText().toString();
         retained.treePaneWidthDp = currentTreePaneWidthDp();
         return retained;
     }
 
+    @Override protected void onPause() {
+        saveRuntimeSnapshotNow(true);
+        super.onPause();
+    }
+
+    @Override protected void onStop() {
+        saveRuntimeSnapshotNow(true);
+        super.onStop();
+    }
+
     @Override protected void onDestroy() {
+        saveRuntimeSnapshotNow(true);
         if (mainHandler != null && autosaveRunnable != null) mainHandler.removeCallbacks(autosaveRunnable);
+        if (mainHandler != null && runtimeSnapshotRunnable != null) mainHandler.removeCallbacks(runtimeSnapshotRunnable);
+        if (previousUncaughtExceptionHandler != null) Thread.setDefaultUncaughtExceptionHandler(previousUncaughtExceptionHandler);
         if (ioExecutor != null) ioExecutor.shutdownNow();
         super.onDestroy();
     }
@@ -380,18 +399,10 @@ public final class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.rgb(250, 250, 250));
 
-        TextView header = new TextView(this);
-        header.setText(APP_DISPLAY_NAME);
-        header.setTextSize(20f);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(12), dp(10), dp(12), dp(6));
-        header.setTextColor(Color.rgb(25, 25, 25));
-        root.addView(header, new LinearLayout.LayoutParams(-1, -2));
-
         LinearLayout toolbarPanel = new LinearLayout(this);
         toolbarPanel.setOrientation(LinearLayout.VERTICAL);
-        toolbarPanel.setPadding(dp(6), dp(2), dp(6), dp(4));
-        toolbarPanel.setBackgroundColor(Color.rgb(244, 246, 250));
+        toolbarPanel.setPadding(dp(4), dp(1), dp(4), dp(2));
+        toolbarPanel.setBackgroundColor(Color.rgb(246, 248, 252));
         root.addView(toolbarPanel, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout fileToolbar = addToolbarRow(toolbarPanel, "Datei");
@@ -476,29 +487,26 @@ public final class MainActivity extends Activity {
         addButton(textToolbar, "RTF Import", v -> importRtfIntoCurrent());
         addButton(textToolbar, "Farben", v -> showColorDialog());
 
-        fileView = new TextView(this);
-        fileView.setPadding(dp(10), dp(2), dp(10), dp(4));
-        fileView.setTextSize(12f);
-        fileView.setTextColor(Color.rgb(90, 90, 90));
-        root.addView(fileView, new LinearLayout.LayoutParams(-1, -2));
-
         LinearLayout content = new LinearLayout(this);
         contentLayout = content;
         int widthDp = getResources().getConfiguration().screenWidthDp;
         boolean wide = widthDp >= 700 || getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
         content.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        content.setPadding(dp(6), dp(0), dp(6), dp(6));
+        content.setPadding(dp(4), 0, dp(4), dp(4));
 
         LinearLayout left = new LinearLayout(this);
         treePane = left;
         left.setOrientation(LinearLayout.VERTICAL);
-        left.setPadding(0, 0, wide ? dp(4) : 0, wide ? 0 : dp(5));
+        left.setPadding(0, 0, 0, wide ? 0 : dp(5));
         rootTitleView = new TextView(this);
+        rootTitleView.setSingleLine(true);
+        rootTitleView.setIncludeFontPadding(false);
+        rootTitleView.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         rootTitleView.setBackground(roundedBackground(Color.rgb(255, 250, 205), Color.rgb(226, 213, 145), 8));
         rootTitleView.setTextColor(Color.rgb(30, 30, 30));
-        rootTitleView.setPadding(dp(8), dp(7), dp(8), dp(7));
-        rootTitleView.setTextSize(15f);
-        left.addView(rootTitleView, new LinearLayout.LayoutParams(-1, -2));
+        rootTitleView.setPadding(dp(7), 0, dp(7), 0);
+        rootTitleView.setTextSize(14f);
+        left.addView(rootTitleView, new LinearLayout.LayoutParams(-1, dp(CONTENT_HEADER_DP)));
         treeList = new ListView(this);
         treeList.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
         treeList.setBackground(roundedBackground(Color.WHITE, Color.rgb(220, 225, 232), 8));
@@ -529,7 +537,7 @@ public final class MainActivity extends Activity {
             int initialTreePx = dp(normalizedInitialTreePaneWidthDp(widthDp));
             content.addView(left, new LinearLayout.LayoutParams(initialTreePx, -1));
             paneDivider = createPaneDivider();
-            content.addView(paneDivider, new LinearLayout.LayoutParams(dp(18), -1));
+            content.addView(paneDivider, new LinearLayout.LayoutParams(dp(16), -1));
         } else {
             paneDivider = null;
             content.addView(left, new LinearLayout.LayoutParams(-1, -2));
@@ -540,20 +548,24 @@ public final class MainActivity extends Activity {
         right.setOrientation(LinearLayout.VERTICAL);
         titleEdit = new EditText(this);
         titleEdit.setSingleLine(true);
-        titleEdit.setTextSize(16f);
+        titleEdit.setIncludeFontPadding(false);
+        titleEdit.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        titleEdit.setMinHeight(0);
+        titleEdit.setMinimumHeight(0);
+        titleEdit.setTextSize(15f);
         titleEdit.setBackground(roundedBackground(Color.rgb(255, 250, 205), Color.rgb(226, 213, 145), 8));
-        titleEdit.setPadding(dp(8), 0, dp(8), 0);
+        titleEdit.setPadding(dp(7), 0, dp(7), 0);
         titleEdit.addTextChangedListener(new SimpleWatcher() {
             @Override public void afterTextChanged(Editable s) {
                 if (loadingEditor || currentNode == null) return;
                 currentNode.title = s.toString().isEmpty() ? "..." : s.toString();
                 titleDirty = true;
-                document.markChanged();
+                markDocumentChanged();
                 treeAdapter.notifyDataSetChanged();
                 updateTitle();
             }
         });
-        right.addView(titleEdit, new LinearLayout.LayoutParams(-1, dp(48)));
+        right.addView(titleEdit, new LinearLayout.LayoutParams(-1, dp(CONTENT_HEADER_DP)));
 
         editor = new EditText(this);
         editor.setTextSize(17f);
@@ -568,7 +580,7 @@ public final class MainActivity extends Activity {
             @Override public void afterTextChanged(Editable s) {
                 if (loadingEditor) return;
                 editorDirty = true;
-                document.markChanged();
+                markDocumentChanged();
                 updateTitle();
             }
         });
@@ -577,16 +589,224 @@ public final class MainActivity extends Activity {
         if (wide) content.post(() -> applyTreePaneWidthPx(dp(treePaneWidthDp), false));
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        statusView = new TextView(this);
-        statusView.setText("Bereit");
-        statusView.setTextSize(12f);
-        statusView.setTextColor(Color.rgb(70, 70, 70));
-        statusView.setPadding(dp(10), dp(4), dp(10), dp(8));
-        root.addView(statusView, new LinearLayout.LayoutParams(-1, -2));
-
         setContentView(root);
         updateTitle();
         rebuildTree();
+    }
+
+    private boolean isOpenDocumentIntent(Intent intent) {
+        return intent != null && intent.getData() != null && Intent.ACTION_VIEW.equals(intent.getAction());
+    }
+
+    private void installCrashSnapshotHandler() {
+        if (previousUncaughtExceptionHandler != null) return;
+        previousUncaughtExceptionHandler = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            try { saveRuntimeSnapshotNow(Looper.myLooper() == Looper.getMainLooper()); } catch (Throwable ignored) {}
+            if (previousUncaughtExceptionHandler != null) previousUncaughtExceptionHandler.uncaughtException(thread, throwable);
+        });
+    }
+
+    private void scheduleRuntimeSnapshotSave() {
+        if (mainHandler == null) return;
+        if (runtimeSnapshotRunnable != null) mainHandler.removeCallbacks(runtimeSnapshotRunnable);
+        runtimeSnapshotRunnable = () -> {
+            runtimeSnapshotRunnable = null;
+            saveRuntimeSnapshotNow(true);
+        };
+        mainHandler.postDelayed(runtimeSnapshotRunnable, RUNTIME_SNAPSHOT_DELAY_MS);
+    }
+
+    private void saveRuntimeSnapshotNow(boolean captureEditor) {
+        try {
+            if (captureEditor && Looper.myLooper() == Looper.getMainLooper()) saveCurrentEditorToNode();
+            if (!hasRecoverableRuntimeContent(document)) return;
+            writeAtomic(runtimeSnapshotFile(), AlxIo.documentToXmlBytes(document));
+            writeAtomic(runtimeSnapshotMetaFile(), runtimeSnapshotMetaText().getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+            // Runtime snapshots must never interrupt editing, saving or shutdown.
+        }
+    }
+
+    private boolean restoreRuntimeSnapshotIfPresent() {
+        try {
+            File file = runtimeSnapshotFile();
+            if (!file.isFile() || file.length() <= 0L) return false;
+            NoteDocument loaded = AlxIo.load(AndroidSettingsStore.readFile(file), "");
+            if (!hasRecoverableRuntimeContent(loaded)) return false;
+            document = loaded;
+            String meta = "";
+            try { meta = new String(AndroidSettingsStore.readFile(runtimeSnapshotMetaFile()), StandardCharsets.UTF_8); } catch (Exception ignored) {}
+            currentUri = null;
+            currentRawFile = null;
+            currentFtpTarget = null;
+            currentDisplayName = metaValue(meta, "displayName", "Wiederhergestellt.alx");
+            if (currentDisplayName == null || currentDisplayName.trim().isEmpty()) currentDisplayName = "Wiederhergestellt.alx";
+            document.displayName = currentDisplayName;
+            String rawPath = metaValue(meta, "rawFile", "");
+            if (rawPath != null && !rawPath.trim().isEmpty()) {
+                File raw = new File(rawPath.trim());
+                if (raw.isFile()) currentRawFile = raw;
+            }
+            String uriText = metaValue(meta, "uri", "");
+            if (currentRawFile == null && uriText != null && !uriText.trim().isEmpty()) {
+                try { currentUri = Uri.parse(uriText.trim()); } catch (Exception ignored) {}
+            }
+            boolean wasChanged = Boolean.parseBoolean(metaValue(meta, "changed", "true"));
+            document.changed = wasChanged || (currentUri == null && currentRawFile == null && currentFtpTarget == null);
+            currentNode = nodeByIndexPath(document.ensureRoot(), metaValue(meta, "selectedPath", ""));
+            if (currentNode == null) currentNode = document.ensureRoot();
+            editorDirty = false;
+            titleDirty = false;
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private File runtimeSnapshotFile() {
+        return new File(getFilesDir(), RUNTIME_SNAPSHOT_FILE);
+    }
+
+    private File runtimeSnapshotMetaFile() {
+        return new File(getFilesDir(), RUNTIME_SNAPSHOT_META_FILE);
+    }
+
+    private void writeAtomic(File file, byte[] data) throws Exception {
+        if (file == null) return;
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists()) parent.mkdirs();
+        File tmp = new File(file.getParentFile() == null ? getFilesDir() : file.getParentFile(), file.getName() + ".tmp");
+        FileOutputStream out = new FileOutputStream(tmp, false);
+        out.write(data == null ? new byte[0] : data);
+        out.getFD().sync();
+        out.close();
+        if (!tmp.renameTo(file)) {
+            FileOutputStream fallback = new FileOutputStream(file, false);
+            fallback.write(data == null ? new byte[0] : data);
+            fallback.close();
+            tmp.delete();
+        }
+    }
+
+    private String runtimeSnapshotMetaText() {
+        StringBuilder out = new StringBuilder();
+        out.append("displayName=").append(escapeMeta(currentDisplayName)).append('\n');
+        out.append("selectedPath=").append(escapeMeta(nodeIndexPath(currentNode))).append('\n');
+        out.append("changed=").append(document != null && document.changed ? "true" : "false").append('\n');
+        out.append("rawFile=").append(escapeMeta(currentRawFile == null ? "" : currentRawFile.getAbsolutePath())).append('\n');
+        out.append("uri=").append(escapeMeta(currentUri == null ? "" : currentUri.toString())).append('\n');
+        out.append("ftp=").append(escapeMeta(currentFtpTarget == null ? "" : currentFtpTarget.safeDisplayUrl())).append('\n');
+        out.append("restored=").append(runtimeSnapshotRestored ? "true" : "false").append('\n');
+        out.append("time=").append(System.currentTimeMillis()).append('\n');
+        return out.toString();
+    }
+
+    private String escapeMeta(String value) {
+        return value == null ? "" : value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r");
+    }
+
+    private String unescapeMeta(String value) {
+        if (value == null || value.isEmpty()) return "";
+        StringBuilder out = new StringBuilder(value.length());
+        boolean slash = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (slash) {
+                if (c == 'n') out.append('\n');
+                else if (c == 'r') out.append('\r');
+                else out.append(c);
+                slash = false;
+            } else if (c == '\\') {
+                slash = true;
+            } else {
+                out.append(c);
+            }
+        }
+        if (slash) out.append('\\');
+        return out.toString();
+    }
+
+    private String metaValue(String meta, String key, String fallback) {
+        if (meta == null || key == null) return fallback;
+        String prefix = key + "=";
+        String[] lines = meta.split("\n");
+        for (String line : lines) if (line.startsWith(prefix)) return unescapeMeta(line.substring(prefix.length()));
+        return fallback;
+    }
+
+    private String nodeIndexPath(NoteNode node) {
+        if (node == null) return "";
+        ArrayList<Integer> parts = new ArrayList<>();
+        NoteNode n = node;
+        while (n != null && n.parent != null) {
+            parts.add(0, Math.max(0, n.indexInParent()));
+            n = n.parent;
+        }
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < parts.size(); i++) {
+            if (i > 0) out.append('.');
+            out.append(parts.get(i));
+        }
+        return out.toString();
+    }
+
+    private NoteNode nodeByIndexPath(NoteNode root, String path) {
+        if (root == null) return null;
+        String clean = path == null ? "" : path.trim();
+        if (clean.isEmpty()) return root;
+        NoteNode n = root;
+        String[] parts = clean.split("\\.");
+        for (String part : parts) {
+            if (part.isEmpty()) continue;
+            int index;
+            try { index = Integer.parseInt(part); } catch (Exception e) { return root; }
+            if (index < 0 || index >= n.children.size()) return root;
+            n = n.children.get(index);
+        }
+        return n;
+    }
+
+    private boolean hasRecoverableRuntimeContent(NoteDocument doc) {
+        if (doc == null || doc.root == null) return false;
+        if (currentUri != null || currentRawFile != null || currentFtpTarget != null) return true;
+        for (NoteNode node : doc.walk()) {
+            if (node == null) continue;
+            if (!isDefaultTitle(node.title)) return true;
+            if (rtfHasVisibleText(node.rtf)) return true;
+            if (node.bgArgb != 0 || node.fgArgb != 0 || node.desktopNote != null) return true;
+            if (!node.extraAttrs.isEmpty() || !node.extraChildXml.isEmpty()) return true;
+        }
+        return doc.walk().size() > 1 || !doc.rootAttrs.isEmpty() || !doc.extraRootXml.isEmpty();
+    }
+
+    private boolean isBlankSingleNodeDocumentForPrompt(NoteDocument doc) {
+        if (doc == null || doc.root == null) return true;
+        List<NoteNode> nodes = doc.walk();
+        if (nodes.size() > 1) return false;
+        for (NoteNode node : nodes) if (rtfHasVisibleText(node.rtf)) return false;
+        return true;
+    }
+
+    private boolean rtfHasVisibleText(String rtf) {
+        String plain = RtfUtils.rtfToPlainText(rtf == null ? "" : rtf);
+        if (plain != null && !plain.trim().isEmpty()) return true;
+        return rtf != null && (rtf.contains("\\pict") || rtf.contains("\\object") || rtf.contains(RtfUtils.LEGACY_IMAGE_PLACEHOLDER));
+    }
+
+    private boolean isDefaultTitle(String title) {
+        String t = title == null ? "" : title.trim();
+        return t.isEmpty() || "start".equalsIgnoreCase(t) || "...".equals(t);
+    }
+
+    private void clearRuntimeSnapshotIfBlankStart() {
+        try {
+            File snapshot = runtimeSnapshotFile();
+            File meta = runtimeSnapshotMetaFile();
+            if (snapshot.isFile()) snapshot.delete();
+            if (meta.isFile()) meta.delete();
+        } catch (Exception ignored) {
+        }
     }
 
     private void requestNotificationPermissionIfUseful() {
@@ -602,17 +822,19 @@ public final class MainActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(2), 0, dp(2));
+        row.setPadding(0, dp(1), 0, dp(1));
 
         TextView caption = new TextView(this);
-        caption.setText(label);
+        caption.setText(toolbarRowGlyph(label));
         caption.setGravity(Gravity.CENTER);
-        caption.setTextSize(11f);
+        caption.setTextSize(12f);
         caption.setTypeface(Typeface.DEFAULT_BOLD);
-        caption.setTextColor(Color.rgb(86, 96, 112));
-        caption.setBackground(roundedBackground(Color.rgb(232, 236, 242), Color.rgb(210, 217, 226), 10));
+        caption.setTextColor(Color.rgb(72, 84, 102));
+        caption.setContentDescription(label + "-Leiste");
+        if (Build.VERSION.SDK_INT >= 26) caption.setTooltipText(label + "-Leiste");
+        caption.setBackground(roundedBackground(Color.rgb(238, 242, 248), Color.rgb(210, 218, 230), 8));
         LinearLayout.LayoutParams captionParams = new LinearLayout.LayoutParams(dp(TOOLBAR_BUTTON_DP), dp(TOOLBAR_BUTTON_DP));
-        captionParams.setMargins(dp(TOOLBAR_BUTTON_MARGIN_DP), dp(2), dp(6), dp(2));
+        captionParams.setMargins(dp(TOOLBAR_BUTTON_MARGIN_DP), dp(1), dp(3), dp(1));
         row.addView(caption, captionParams);
 
         scroll.addView(row, new HorizontalScrollView.LayoutParams(-2, -2));
@@ -629,33 +851,52 @@ public final class MainActivity extends Activity {
         b.setIncludeFontPadding(false);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setTextSize(toolbarGlyphTextSize(spec.displayText(true)));
-        b.setTextColor(Color.rgb(35, 45, 58));
+        b.setTextColor(Color.rgb(30, 42, 58));
+        b.setPadding(0, 0, 0, dp(1));
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
         b.setBackground(toolbarButtonBackground());
+        if (Build.VERSION.SDK_INT >= 21) b.setElevation(dp(1));
         b.setClickable(true);
         b.setFocusable(true);
         b.setContentDescription(spec.contentDescription());
         if (Build.VERSION.SDK_INT >= 26) b.setTooltipText(spec.contentDescription());
         b.setOnClickListener(listener);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(TOOLBAR_BUTTON_DP), dp(TOOLBAR_BUTTON_DP));
-        params.setMargins(dp(TOOLBAR_BUTTON_MARGIN_DP), dp(2), dp(TOOLBAR_BUTTON_MARGIN_DP), dp(2));
+        params.setMargins(dp(TOOLBAR_BUTTON_MARGIN_DP), dp(1), dp(TOOLBAR_BUTTON_MARGIN_DP), dp(1));
         toolbar.addView(b, params);
     }
 
     private float toolbarGlyphTextSize(String glyph) {
-        int len = glyph == null ? 0 : glyph.length();
-        if (len >= 5) return 9.5f;
-        if (len == 4) return 11f;
-        if (len == 3) return 13f;
-        return 20f;
+        int len = glyph == null ? 0 : glyph.codePointCount(0, glyph.length());
+        if (len >= 5) return 5.5f;
+        if (len == 4) return 6.5f;
+        if (len == 3) return 7.5f;
+        if (len == 2) return 9.5f;
+        return 14.5f;
+    }
+
+    private String toolbarRowGlyph(String label) {
+        if ("Datei".equals(label)) return "≡";
+        if ("Baum".equals(label)) return "▦";
+        if ("Text".equals(label)) return "A";
+        return label == null || label.isEmpty() ? "•" : label.substring(0, 1);
     }
 
     private Drawable toolbarButtonBackground() {
         GradientDrawable base = new GradientDrawable();
         base.setShape(GradientDrawable.RECTANGLE);
-        base.setColor(Color.WHITE);
-        base.setCornerRadius(dp(11));
-        base.setStroke(dp(1), Color.rgb(208, 216, 226));
-        return new RippleDrawable(ColorStateList.valueOf(Color.rgb(207, 224, 255)), base, null);
+        base.setColor(Color.rgb(255, 255, 255));
+        base.setCornerRadius(dp(7));
+        base.setStroke(dp(1), Color.rgb(198, 208, 222));
+
+        GradientDrawable mask = new GradientDrawable();
+        mask.setShape(GradientDrawable.RECTANGLE);
+        mask.setColor(Color.WHITE);
+        mask.setCornerRadius(dp(7));
+        return new RippleDrawable(ColorStateList.valueOf(Color.rgb(198, 219, 255)), base, mask);
     }
 
     private Drawable roundedBackground(int fillColor, int strokeColor, int radiusDp) {
@@ -668,36 +909,49 @@ public final class MainActivity extends Activity {
     }
 
     private View createPaneDivider() {
-        TextView divider = new TextView(this);
-        divider.setText("⋮");
-        divider.setGravity(Gravity.CENTER);
-        divider.setTextSize(26f);
-        divider.setTextColor(Color.rgb(90, 104, 124));
-        divider.setBackground(roundedBackground(Color.rgb(232, 236, 242), Color.rgb(205, 214, 226), 9));
-        divider.setContentDescription("Trenner: mit dem Finger ziehen, um Baum und RTF-Text breiter oder schmaler zu machen");
-        if (Build.VERSION.SDK_INT >= 26) divider.setTooltipText("Breite zwischen Baum und RTF ziehen");
-        final float[] startRawX = new float[]{0f};
-        final int[] startWidth = new int[]{0};
-        divider.setOnTouchListener((view, event) -> {
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    startRawX[0] = event.getRawX();
-                    startWidth[0] = treePane == null ? dp(treePaneWidthDp) : treePane.getWidth();
-                    view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
-                    return true;
-                case MotionEvent.ACTION_MOVE:
-                    applyTreePaneWidthPx(startWidth[0] + Math.round(event.getRawX() - startRawX[0]), false);
-                    return true;
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    applyTreePaneWidthPx(startWidth[0] + Math.round(event.getRawX() - startRawX[0]), true);
-                    status("Baumbreite: " + treePaneWidthDp + " dp");
-                    return true;
-                default:
-                    return true;
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setContentDescription("Trenner: mit dem Finger ziehen, um Baum und RTF-Text breiter oder schmaler zu machen");
+        if (Build.VERSION.SDK_INT >= 26) column.setTooltipText("Breite zwischen Baum und RTF ziehen");
+
+        View yellowBridge = new View(this);
+        yellowBridge.setBackground(roundedBackground(Color.rgb(255, 250, 205), Color.rgb(226, 213, 145), 8));
+        column.addView(yellowBridge, new LinearLayout.LayoutParams(-1, dp(CONTENT_HEADER_DP)));
+
+        TextView handle = new TextView(this);
+        handle.setText("⋮");
+        handle.setGravity(Gravity.CENTER);
+        handle.setTextSize(26f);
+        handle.setTextColor(Color.rgb(90, 104, 124));
+        handle.setBackground(roundedBackground(Color.rgb(232, 236, 242), Color.rgb(205, 214, 226), 9));
+        column.addView(handle, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        View.OnTouchListener dragListener = new View.OnTouchListener() {
+            final float[] startRawX = new float[]{0f};
+            final int[] startWidth = new int[]{0};
+            @Override public boolean onTouch(View view, MotionEvent event) {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        startRawX[0] = event.getRawX();
+                        startWidth[0] = treePane == null ? dp(treePaneWidthDp) : treePane.getWidth();
+                        view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        applyTreePaneWidthPx(startWidth[0] + Math.round(event.getRawX() - startRawX[0]), false);
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        applyTreePaneWidthPx(startWidth[0] + Math.round(event.getRawX() - startRawX[0]), true);
+                        status("Baumbreite: " + treePaneWidthDp + " dp");
+                        return true;
+                    default:
+                        return true;
+                }
             }
-        });
-        return divider;
+        };
+        column.setOnTouchListener(dragListener);
+        handle.setOnTouchListener(dragListener);
+        return column;
     }
 
     private int normalizedInitialTreePaneWidthDp(int screenWidthDp) {
@@ -717,7 +971,7 @@ public final class MainActivity extends Activity {
         if (treePane == null || contentLayout == null) return;
         int total = contentLayout.getWidth();
         if (total <= 0) total = getResources().getDisplayMetrics().widthPixels - dp(12);
-        int dividerWidth = paneDivider == null || paneDivider.getWidth() <= 0 ? dp(18) : paneDivider.getWidth();
+        int dividerWidth = paneDivider == null || paneDivider.getWidth() <= 0 ? dp(16) : paneDivider.getWidth();
         int minTree = dp(TREE_PANE_MIN_DP);
         int minEditor = dp(EDITOR_PANE_MIN_DP);
         int maxTree = Math.max(minTree, total - dividerWidth - minEditor);
@@ -736,10 +990,15 @@ public final class MainActivity extends Activity {
         AndroidSettingsStore.save(this, settings);
     }
 
+    private void markDocumentChanged() {
+        if (document != null) document.markChanged();
+        if (!loadingEditor) scheduleRuntimeSnapshotSave();
+    }
+
     private void toggleNodeExpanded(NoteNode node, boolean showMessage) {
         if (node == null || node.children.isEmpty()) return;
         node.expanded = !node.expanded;
-        document.markChanged();
+        markDocumentChanged();
         rebuildTree();
         treeAdapter.setSelected(currentNode);
         if (showMessage) status(node.expanded ? "Knoten geöffnet" : "Knoten geschlossen");
@@ -770,6 +1029,8 @@ public final class MainActivity extends Activity {
         currentRawFile = null;
         currentFtpTarget = null;
         currentDisplayName = "unbenannt.alx";
+        runtimeSnapshotRestored = false;
+        clearRuntimeSnapshotIfBlankStart();
         editorDirty = false;
         titleDirty = false;
         selectNode(document.ensureRoot(), false);
@@ -840,6 +1101,7 @@ public final class MainActivity extends Activity {
             editorDirty = false;
             titleDirty = false;
             updateTitle();
+            saveRuntimeSnapshotNow(false);
             status("Gespeichert: " + currentDisplayName);
         } catch (Exception e) {
             error("Speichern fehlgeschlagen", e.getMessage());
@@ -869,6 +1131,7 @@ public final class MainActivity extends Activity {
             editorDirty = false;
             titleDirty = false;
             updateTitle();
+            saveRuntimeSnapshotNow(false);
             status((autosave ? "Autosave" : "Gespeichert") + ": " + file.getAbsolutePath());
         } catch (Exception e) {
             error(autosave ? "Autosave fehlgeschlagen" : "Speichern fehlgeschlagen", e.getMessage());
@@ -1181,6 +1444,7 @@ public final class MainActivity extends Activity {
             editorDirty = false;
             titleDirty = false;
             updateTitle();
+            saveRuntimeSnapshotNow(false);
             status("FTP gespeichert: " + result.safeDisplayUrl());
         });
     }
@@ -1284,6 +1548,7 @@ public final class MainActivity extends Activity {
                     titleDirty = false;
                     autosaveInFlight = false;
                     updateTitle();
+                    saveRuntimeSnapshotNow(false);
                     status("Autosave FTP: " + target.safeDisplayUrl());
                 });
             } catch (Exception e) {
@@ -1338,7 +1603,7 @@ public final class MainActivity extends Activity {
     private void expandAllNodes() {
         if (document == null || document.root == null) return;
         int changed = LegacyTreeExpansion.expandAll(document.ensureRoot());
-        if (changed > 0) document.markChanged();
+        if (changed > 0) markDocumentChanged();
         rebuildTree();
         if (currentNode != null) selectNode(currentNode, true);
         status("Alle Knoten geöffnet");
@@ -1347,7 +1612,7 @@ public final class MainActivity extends Activity {
     private void collapseAllNodes() {
         if (document == null || document.root == null) return;
         int changed = LegacyTreeExpansion.collapseAll(document.ensureRoot());
-        if (changed > 0) document.markChanged();
+        if (changed > 0) markDocumentChanged();
         rebuildTree();
         selectNode(document.ensureRoot(), true);
         status("Alle Knoten geschlossen");
@@ -1357,7 +1622,7 @@ public final class MainActivity extends Activity {
         if (currentNode == null) return;
         LegacyDesktopNoteTreeOps.ClearResult result = LegacyDesktopNoteTreeOps.clearDesktopNotes(currentNode);
         if (result.clearedDesktopNotes > 0) {
-            document.markChanged();
+            markDocumentChanged();
             rebuildTree();
             selectNode(currentNode, true);
         }
@@ -1378,7 +1643,7 @@ public final class MainActivity extends Activity {
                     }
                     LegacyTreeDelete.DeletePlan p = LegacyTreeDelete.plan(currentNode);
                     NoteNode fallback = LegacyTreeDelete.delete(currentNode);
-                    document.markChanged();
+                    markDocumentChanged();
                     rebuildTree();
                     selectNode(fallback == null ? document.ensureRoot() : fallback, true);
                     status("Knoten gelöscht" + (p.desktopNotesToClose > 0 ? " (Haftnotizen geschlossen: " + p.desktopNotesToClose + ")" : ""));
@@ -1410,7 +1675,7 @@ public final class MainActivity extends Activity {
         copyCurrentNode(false);
         LegacyTreeDelete.DeletePlan p = LegacyTreeDelete.plan(currentNode);
         NoteNode fallback = LegacyTreeDelete.delete(currentNode);
-        document.markChanged();
+        markDocumentChanged();
         rebuildTree();
         selectNode(fallback == null ? document.ensureRoot() : fallback, true);
         status("Knoten ausgeschnitten" + (p.desktopNotesToClose > 0 ? " (Haftnotizen geschlossen: " + p.desktopNotesToClose + ")" : ""));
@@ -1427,7 +1692,7 @@ public final class MainActivity extends Activity {
         }
         NoteNode pasted = NoteTreeOps.legacyPasteClone(source, currentNode);
         ensureAncestorsExpanded(pasted);
-        document.markChanged();
+        markDocumentChanged();
         rebuildTree();
         selectNode(pasted, true);
         status("Knoten eingefügt");
@@ -1457,7 +1722,7 @@ public final class MainActivity extends Activity {
         }
         siblings.remove(index);
         siblings.add(index - 1, currentNode);
-        document.markChanged();
+        markDocumentChanged();
         rebuildTree();
         selectNode(currentNode, true);
         status("Knoten nach oben verschoben");
@@ -1473,7 +1738,7 @@ public final class MainActivity extends Activity {
         }
         siblings.remove(index);
         siblings.add(index + 1, currentNode);
-        document.markChanged();
+        markDocumentChanged();
         rebuildTree();
         selectNode(currentNode, true);
         status("Knoten nach unten verschoben");
@@ -1486,7 +1751,7 @@ public final class MainActivity extends Activity {
             status("Einrücken hier nicht möglich");
             return;
         }
-        document.markChanged();
+        markDocumentChanged();
         rebuildTree();
         selectNode(currentNode, true);
         status("Knoten eingerückt");
@@ -1499,7 +1764,7 @@ public final class MainActivity extends Activity {
             status("Ausrücken hier nicht möglich");
             return;
         }
-        document.markChanged();
+        markDocumentChanged();
         rebuildTree();
         selectNode(currentNode, true);
         status("Knoten ausgerückt");
@@ -1533,7 +1798,7 @@ public final class MainActivity extends Activity {
                         return;
                     }
                     ensureAncestorsExpanded(currentNode);
-                    document.markChanged();
+                    markDocumentChanged();
                     rebuildTree();
                     selectNode(currentNode, true);
                     status("Knoten vor Ziel verschoben");
@@ -1666,7 +1931,7 @@ public final class MainActivity extends Activity {
         if (currentNode == null || editor == null || decision == null || !decision.valid) return;
         int[] range = editorSelectionRange(true);
         if (range[1] <= range[0]) {
-            status("Kein Text zum Färben");
+            toast("Kein Text zum Färben vorhanden");
             return;
         }
         Spannable text = editor.getText();
@@ -1683,6 +1948,23 @@ public final class MainActivity extends Activity {
             }
         } catch (Exception e) {
             error("RTF-Farbe", e.getMessage());
+        }
+    }
+
+    private void clearRtfColorFromSelection(boolean background) {
+        if (currentNode == null || editor == null) return;
+        int[] range = editorSelectionRange(true);
+        if (range[1] <= range[0]) {
+            toast("Kein Text zum Färben vorhanden");
+            return;
+        }
+        Spannable text = editor.getText();
+        if (background) {
+            removeOverlappingSpans(text, range[0], range[1], BackgroundColorSpan.class);
+            markEditorRichChanged("RTF-Hintergrundfarbe entfernt");
+        } else {
+            removeOverlappingSpans(text, range[0], range[1], ForegroundColorSpan.class);
+            markEditorRichChanged("RTF-Textfarbe entfernt");
         }
     }
 
@@ -1853,7 +2135,7 @@ public final class MainActivity extends Activity {
 
     private void markEditorRichChanged(String message) {
         editorDirty = true;
-        if (document != null) document.markChanged();
+        if (document != null) markDocumentChanged();
         updateTitle();
         status(message == null || message.isEmpty() ? "RTF-Format angewendet" : message);
     }
@@ -2013,7 +2295,7 @@ public final class MainActivity extends Activity {
         if (currentNode == null) return;
         editorDirty = false;
         currentNode.rtf = rtf == null ? "" : rtf;
-        document.markChanged();
+        markDocumentChanged();
         selectNode(currentNode, true);
         updateTitle();
         if (message != null && !message.isEmpty()) status(message);
@@ -2034,7 +2316,7 @@ public final class MainActivity extends Activity {
             NoteNode imported = new NoteNode(title, RtfUtils.htmlToRtf(html));
             currentNode.addChild(imported);
             currentNode.expanded = true;
-            document.markChanged();
+            markDocumentChanged();
             rebuildTree();
             selectNode(imported, true);
             updateTitle();
@@ -2050,7 +2332,29 @@ public final class MainActivity extends Activity {
 
     private void showColorDialog() {
         if (currentNode == null) return;
-        String[] actions = {"Hintergrundfarbe wählen", "Textfarbe wählen", "Hintergrund löschen", "Textfarbe löschen"};
+        String[] palette = LegacyColorDialogModel.paletteLabels();
+        String[] labels = new String[palette.length + 4];
+        for (int i = 0; i < palette.length; i++) labels[i] = palette[i];
+        labels[palette.length] = "RTF-Textfarbe löschen";
+        labels[palette.length + 1] = "RTF-Hintergrundfarbe wählen…";
+        labels[palette.length + 2] = "RTF-Hintergrund löschen";
+        labels[palette.length + 3] = "Knotenfarben…";
+        new AlertDialog.Builder(this)
+                .setTitle("RTF-Textfarbe")
+                .setItems(labels, (d, which) -> {
+                    if (which < palette.length) applyRtfColorToSelection(LegacyColorDialogModel.choosePalette(LegacyColorDialogModel.Role.RTF_TEXT, which));
+                    else if (which == palette.length) clearRtfColorFromSelection(false);
+                    else if (which == palette.length + 1) showRtfColorPalette(LegacyColorDialogModel.Role.RTF_HIGHLIGHT);
+                    else if (which == palette.length + 2) clearRtfColorFromSelection(true);
+                    else showNodeColorDialog();
+                })
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void showNodeColorDialog() {
+        if (currentNode == null) return;
+        String[] actions = {"Knoten-Hintergrund wählen", "Knoten-Textfarbe wählen", "Knoten-Hintergrund löschen", "Knoten-Textfarbe löschen"};
         new AlertDialog.Builder(this)
                 .setTitle("Knotenfarben")
                 .setItems(actions, (d, which) -> {
@@ -2077,7 +2381,7 @@ public final class MainActivity extends Activity {
         if (currentNode == null) return;
         if (background) currentNode.bgArgb = argb;
         else currentNode.fgArgb = argb;
-        document.markChanged();
+        markDocumentChanged();
         rebuildTree();
         updateTitle();
         status(background ? "Hintergrund gesetzt" : "Textfarbe gesetzt");
@@ -2110,7 +2414,7 @@ public final class MainActivity extends Activity {
                 .setView(box)
                 .setNeutralButton("Entfernen", (d, which) -> {
                     currentNode.desktopNote = null;
-                    document.markChanged();
+                    markDocumentChanged();
                     updateTitle();
                     status("Haftnotiz-Metadaten entfernt");
                 })
@@ -2126,7 +2430,7 @@ public final class MainActivity extends Activity {
                     state.argb = parseInt(argb.getText().toString(), LegacyColors.legacyLightColorArgb(null));
                     state.legacySparse = false;
                     currentNode.desktopNote = state;
-                    document.markChanged();
+                    markDocumentChanged();
                     updateTitle();
                     status("Haftnotiz-Metadaten gesetzt");
                 })
@@ -2219,7 +2523,7 @@ public final class MainActivity extends Activity {
                 .setNeutralButton("Löschen", (d, which) -> {
                     AndroidAlarmScheduler.cancelNodeAlarm(this, currentNode);
                     AlarmUtils.clearFromNode(currentNode);
-                    document.markChanged();
+                    markDocumentChanged();
                     updateTitle();
                     status("Wecker gelöscht");
                 })
@@ -2236,7 +2540,7 @@ public final class MainActivity extends Activity {
                     }
                     AndroidAlarmScheduler.cancelNodeAlarm(this, currentNode);
                     AlarmUtils.writeToNode(currentNode, result.spec);
-                    document.markChanged();
+                    markDocumentChanged();
                     updateTitle();
                     boolean scheduled = AndroidAlarmScheduler.scheduleNodeAlarm(this, currentNode);
                     status(LegacyAlarmDialogModel.statusAfterSave(result, scheduled));
@@ -2698,7 +3002,7 @@ public final class MainActivity extends Activity {
         if (changed) {
             currentNode.title = nextTitle;
             currentNode.rtf = nextRtf;
-            document.markChanged();
+            markDocumentChanged();
             if (currentNode.desktopNote != null) status("Haftnotiz-Daten aktualisiert");
         }
         editorDirty = false;
@@ -2714,10 +3018,12 @@ public final class MainActivity extends Activity {
     }
 
     private void finishLoadedDocument(String message) {
+        runtimeSnapshotRestored = false;
         currentNode = null;
         rebuildTree();
         selectNode(document.ensureRoot(), false);
         updateTitle();
+        scheduleRuntimeSnapshotSave();
         status((message == null ? "Geöffnet" : message) + " · " + treeExpansionSummary());
     }
 
@@ -3194,7 +3500,7 @@ public final class MainActivity extends Activity {
                 return;
             }
             document.password = decision.newPassword;
-            document.markChanged();
+            markDocumentChanged();
             updateTitle();
             status(decision.newPassword.isEmpty() ? "Passwort entfernt" : "Passwort gesetzt");
             dialog.dismiss();
@@ -3266,7 +3572,7 @@ public final class MainActivity extends Activity {
 
     private void confirmDiscardThen(ContinueCallback callback) {
         saveCurrentEditorToNode();
-        if (!LegacyDialogModels.shouldShowWannaSave(document.changed)) {
+        if (!LegacyDialogModels.shouldShowWannaSave(document.changed) || isBlankSingleNodeDocumentForPrompt(document)) {
             callback.run();
             return;
         }
@@ -3595,11 +3901,10 @@ public final class MainActivity extends Activity {
     private void updateTitle() {
         LegacyDocumentTitle.State state = currentDocumentTitleState();
         setTitle(state.appTitle);
-        if (fileView != null) fileView.setText(state.sourceLine);
     }
 
     private void status(String text) {
-        if (statusView != null) statusView.setText(text == null ? "" : text);
+        // Keine dauerhafte Statusleiste mehr: Rückmeldungen bleiben in Dialogen/Ansichten.
     }
 
     private void toast(String text) { Toast.makeText(this, text, Toast.LENGTH_SHORT).show(); }

@@ -118,7 +118,7 @@ public final class LegacySettings {
 
     public static int normalizeAndroidTreePaneWidthDp(int value) {
         if (value <= 0) return 280;
-        return Math.max(56, Math.min(1200, value));
+        return Math.max(24, Math.min(1200, value));
     }
 
     public static String normalizeWindowState(String value) {
