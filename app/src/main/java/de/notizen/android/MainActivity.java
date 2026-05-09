@@ -10,9 +10,17 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -20,9 +28,30 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.text.Editable;
+import android.text.Layout;
+import android.text.Spannable;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
 import android.text.TextWatcher;
+import android.text.style.AbsoluteSizeSpan;
+import android.text.style.AlignmentSpan;
+import android.text.style.BackgroundColorSpan;
+import android.text.style.CharacterStyle;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.ImageSpan;
+import android.text.style.LeadingMarginSpan;
+import android.text.style.ParagraphStyle;
+import android.text.style.StrikethroughSpan;
+import android.text.style.StyleSpan;
+import android.text.style.SubscriptSpan;
+import android.text.style.SuperscriptSpan;
+import android.text.style.TypefaceSpan;
+import android.text.style.URLSpan;
+import android.text.style.UnderlineSpan;
+import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.AdapterView;
@@ -56,8 +85,10 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
@@ -138,6 +169,12 @@ import de.notizen.android.core.NodeClipboard;
 import de.notizen.android.core.NoteDocument;
 import de.notizen.android.core.NoteNode;
 import de.notizen.android.core.NoteTreeOps;
+import de.notizen.android.core.RtfContentPart;
+import de.notizen.android.core.RtfField;
+import de.notizen.android.core.RtfHyperlink;
+import de.notizen.android.core.RtfImagePart;
+import de.notizen.android.core.RtfObject;
+import de.notizen.android.core.RtfTextStyle;
 import de.notizen.android.core.RtfUtils;
 import de.notizen.android.core.Search;
 import de.notizen.android.core.SearchResult;
@@ -145,6 +182,16 @@ import de.notizen.android.core.SimpleFtpClient;
 import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
+    private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
+    private static final String APP_VERSION_NAME = "1.0.98-java-android-nativ";
+    private static final String RTF_IMAGE_CHAR = "\ufffc";
+
+    private static final int TOOLBAR_BUTTON_DP = 48;
+    private static final int TOOLBAR_BUTTON_MARGIN_DP = 3;
+    private static final int TREE_PANE_DEFAULT_DP = 280;
+    private static final int TREE_PANE_MIN_DP = 56;
+    private static final int EDITOR_PANE_MIN_DP = 96;
+
     private static final int REQ_OPEN = 1001;
     private static final int REQ_SAVE_AS = 1002;
     private static final int REQ_EXPORT_TEXT = 1003;
@@ -194,23 +241,126 @@ public final class MainActivity extends Activity {
     private boolean editorDirty = false;
     private boolean titleDirty = false;
     private boolean editorHorizontallyScrolling = false;
+    private int treePaneWidthDp = TREE_PANE_DEFAULT_DP;
+    private LinearLayout contentLayout;
+    private LinearLayout treePane;
+    private LinearLayout editorPane;
+    private View paneDivider;
 
     private interface PasswordCallback { void onPassword(String password); }
     private interface ContinueCallback { void run(); }
     private interface BackgroundCallback<T> { T run() throws Exception; }
     private interface UiCallback<T> { void run(T value); }
 
+    private static final class RetainedState {
+        NoteDocument document;
+        NoteNode currentNode;
+        Uri currentUri;
+        File currentRawFile;
+        String currentDisplayName;
+        NoteNode internalClipboardNode;
+        LegacySettings settings;
+        FtpTarget currentFtpTarget;
+        boolean editorHorizontallyScrolling;
+        int selectionStart;
+        int selectionEnd;
+        String statusText;
+        int treePaneWidthDp;
+    }
+
+    private static final class RtfTypefaceSpan extends TypefaceSpan {
+        final String familyName;
+        RtfTypefaceSpan(String family) {
+            super(family == null || family.trim().isEmpty() ? "sans" : family.trim());
+            familyName = family == null || family.trim().isEmpty() ? "sans" : family.trim();
+        }
+    }
+
+    private static final class RtfImageSpan extends ImageSpan {
+        final String rawRtf;
+        final String mimeType;
+        final byte[] imageData;
+        final int widthTwips;
+        final int heightTwips;
+        RtfImageSpan(Drawable drawable, String rawRtf, String mimeType, byte[] imageData, int widthTwips, int heightTwips) {
+            super(drawable, "notizen-rtf-image", ImageSpan.ALIGN_BOTTOM);
+            this.rawRtf = rawRtf == null ? "" : rawRtf;
+            this.mimeType = mimeType == null ? "" : mimeType;
+            this.imageData = imageData == null ? new byte[0] : imageData;
+            this.widthTwips = Math.max(0, widthTwips);
+            this.heightTwips = Math.max(0, heightTwips);
+        }
+    }
+
+    private static final class RtfRawSpan {
+        final String rawRtf;
+        final String kind;
+        RtfRawSpan(String rawRtf, String kind) {
+            this.rawRtf = rawRtf == null ? "" : rawRtf;
+            this.kind = kind == null ? "" : kind;
+        }
+    }
+
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        settings = AndroidSettingsStore.load(this);
+        RetainedState retained = null;
+        Object last = getLastNonConfigurationInstance();
+        if (last instanceof RetainedState) retained = (RetainedState) last;
+        if (retained != null) {
+            document = retained.document == null ? NoteDocument.newDocument() : retained.document;
+            currentNode = retained.currentNode;
+            currentUri = retained.currentUri;
+            currentRawFile = retained.currentRawFile;
+            currentDisplayName = retained.currentDisplayName == null ? "unbenannt.alx" : retained.currentDisplayName;
+            internalClipboardNode = retained.internalClipboardNode;
+            currentFtpTarget = retained.currentFtpTarget;
+            settings = retained.settings == null ? AndroidSettingsStore.load(this) : retained.settings;
+            editorHorizontallyScrolling = retained.editorHorizontallyScrolling;
+            treePaneWidthDp = retained.treePaneWidthDp > 0 ? LegacySettings.normalizeAndroidTreePaneWidthDp(retained.treePaneWidthDp) : LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
+        } else {
+            settings = AndroidSettingsStore.load(this);
+            treePaneWidthDp = LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
+        }
         ioExecutor = Executors.newSingleThreadExecutor();
         mainHandler = new Handler(Looper.getMainLooper());
         buildUi();
         requestNotificationPermissionIfUseful();
-        selectNode(document.ensureRoot(), false);
-        boolean openedByIntent = handleViewIntent(getIntent());
-        if (!openedByIntent) consumeOpenOnceFileIfPresent();
+        if (retained != null) {
+            NoteNode restored = currentNode == null ? document.ensureRoot() : currentNode;
+            selectNode(restored, false);
+            if (editor != null) {
+                int start = Math.max(0, Math.min(retained.selectionStart, editor.getText().length()));
+                int end = Math.max(start, Math.min(retained.selectionEnd, editor.getText().length()));
+                editor.setSelection(start, end);
+            }
+            if (statusView != null && retained.statusText != null && !retained.statusText.isEmpty()) statusView.setText(retained.statusText);
+            updateTitle();
+            status("Ansicht wiederhergestellt");
+        } else {
+            selectNode(document.ensureRoot(), false);
+            boolean openedByIntent = handleViewIntent(getIntent());
+            if (!openedByIntent) consumeOpenOnceFileIfPresent();
+        }
         scheduleAutosaveTick();
+    }
+
+    @Override public Object onRetainNonConfigurationInstance() {
+        saveCurrentEditorToNode();
+        RetainedState retained = new RetainedState();
+        retained.document = document;
+        retained.currentNode = currentNode;
+        retained.currentUri = currentUri;
+        retained.currentRawFile = currentRawFile;
+        retained.currentDisplayName = currentDisplayName;
+        retained.internalClipboardNode = internalClipboardNode;
+        retained.settings = settings;
+        retained.currentFtpTarget = currentFtpTarget;
+        retained.editorHorizontallyScrolling = editorHorizontallyScrolling;
+        retained.selectionStart = editor == null ? 0 : Math.max(0, editor.getSelectionStart());
+        retained.selectionEnd = editor == null ? retained.selectionStart : Math.max(retained.selectionStart, editor.getSelectionEnd());
+        retained.statusText = statusView == null ? "" : statusView.getText().toString();
+        retained.treePaneWidthDp = currentTreePaneWidthDp();
+        return retained;
     }
 
     @Override protected void onDestroy() {
@@ -231,90 +381,100 @@ public final class MainActivity extends Activity {
         root.setBackgroundColor(Color.rgb(250, 250, 250));
 
         TextView header = new TextView(this);
-        header.setText("Notizen Android");
+        header.setText(APP_DISPLAY_NAME);
         header.setTextSize(20f);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(dp(12), dp(10), dp(12), dp(6));
         header.setTextColor(Color.rgb(25, 25, 25));
         root.addView(header, new LinearLayout.LayoutParams(-1, -2));
 
-        HorizontalScrollView toolbarScroll = new HorizontalScrollView(this);
-        toolbarScroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout toolbar = new LinearLayout(this);
-        toolbar.setOrientation(LinearLayout.HORIZONTAL);
-        toolbar.setPadding(dp(6), dp(4), dp(6), dp(4));
-        toolbarScroll.addView(toolbar, new HorizontalScrollView.LayoutParams(-2, -2));
-        root.addView(toolbarScroll, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout toolbarPanel = new LinearLayout(this);
+        toolbarPanel.setOrientation(LinearLayout.VERTICAL);
+        toolbarPanel.setPadding(dp(6), dp(2), dp(6), dp(4));
+        toolbarPanel.setBackgroundColor(Color.rgb(244, 246, 250));
+        root.addView(toolbarPanel, new LinearLayout.LayoutParams(-1, -2));
 
-        addButton(toolbar, "Neu", v -> confirmDiscardThen(this::newDocument));
-        addButton(toolbar, "Öffnen", v -> confirmDiscardThen(this::openDocument));
-        addButton(toolbar, "Letzte", v -> showRecentFiles());
-        addButton(toolbar, "Speichern", v -> saveDocument());
-        addButton(toolbar, "Speichern unter", v -> saveDocumentAs());
-        addButton(toolbar, "Sicherungen", v -> showBackups());
-        addButton(toolbar, "Einstellungen", v -> showSettingsDialog());
-        addButton(toolbar, "Config", v -> showConfigSnapshot());
-        addButton(toolbar, "FTP öffnen", v -> showFtpDialog(false));
-        addButton(toolbar, "FTP speichern", v -> showFtpDialog(true));
-        addButton(toolbar, "Schließen", v -> closeDocumentLegacy());
-        addButton(toolbar, "Status", v -> showLifecycleStatus());
-        addButton(toolbar, "Kind", v -> newChild());
-        addButton(toolbar, "Daneben", v -> newNext());
-        addButton(toolbar, "Auf/Zu", v -> toggleExpanded());
-        addButton(toolbar, "Alle auf", v -> expandAllNodes());
-        addButton(toolbar, "Alle zu", v -> collapseAllNodes());
-        addButton(toolbar, "Löschen", v -> deleteCurrent());
-        addButton(toolbar, "Kopieren", v -> copyCurrentNode(false));
-        addButton(toolbar, "Ausschneiden", v -> cutCurrentNode());
-        addButton(toolbar, "Einfügen", v -> pasteNode());
-        addButton(toolbar, "Rauf", v -> moveCurrentUp());
-        addButton(toolbar, "Runter", v -> moveCurrentDown());
-        addButton(toolbar, "Einrücken", v -> indentCurrent());
-        addButton(toolbar, "Ausrücken", v -> outdentCurrent());
-        addButton(toolbar, "Vor Ziel", v -> showMoveBeforeTargetDialog());
-        addButton(toolbar, "Datum", v -> insertDate());
-        addButton(toolbar, "Punkt", v -> insertLegacyBullet());
-        addButton(toolbar, "RTF Format", v -> showRtfFormatDialog());
-        addButton(toolbar, "Scroll", v -> cycleScrollbars());
-        addButton(toolbar, "Bild", v -> insertImage());
-        addButton(toolbar, "Vorschau", v -> showRichPreview());
-        addButton(toolbar, "RTF Info", v -> showRtfInfoDialog());
-        addButton(toolbar, "Drucken", v -> showPrintDialog());
-        addButton(toolbar, "HTML Import", v -> importHtmlNote());
-        addButton(toolbar, "TXT Import", v -> importTextIntoCurrent());
-        addButton(toolbar, "RTF Import", v -> importRtfIntoCurrent());
-        addButton(toolbar, "Farben", v -> showColorDialog());
-        addButton(toolbar, "Haftnotiz", v -> showDesktopNoteDialog());
-        addButton(toolbar, "Haft Layout", v -> showDesktopNoteLayout());
-        addButton(toolbar, "Haftliste", v -> showDesktopNoteTrayList());
-        addButton(toolbar, "Haft weg", v -> clearDesktopNotesInSubtree());
-        addButton(toolbar, "Wecker", v -> showAlarmDialog());
-        addButton(toolbar, "Suche", v -> showSearchDialog());
-        addButton(toolbar, "Export TXT", v -> exportText());
-        addButton(toolbar, "Export ANSI", v -> exportTextAnsi());
-        addButton(toolbar, "Export Unicode", v -> exportTextUnicode());
-        addButton(toolbar, "Export HTML", v -> exportHtml());
-        addButton(toolbar, "Export RTF", v -> exportRtf());
-        addButton(toolbar, "Knoten TXT", v -> exportCurrentNodeText());
-        addButton(toolbar, "Knoten RTF", v -> exportCurrentNodeRtf());
-        addButton(toolbar, "Teilbaum", v -> createUnifiedCurrentNote());
-        addButton(toolbar, "Gesamt", v -> createUnifiedRootNote());
-        addButton(toolbar, "Passwort", v -> showPasswordChangeDialog());
-        addButton(toolbar, "Statistik", v -> showStats());
-        addButton(toolbar, "Validieren", v -> showValidationSummary());
-        addButton(toolbar, "Diagnose", v -> showDiagnostics());
-        addButton(toolbar, "Layout", v -> showLayoutDiagnostics());
-        addButton(toolbar, "Launcher", v -> showRuntimeIdentity());
-        addButton(toolbar, "Dialoge", v -> showActivationFocusModel());
-        addButton(toolbar, "Toolbars", v -> showToolbarToggleModel());
-        addButton(toolbar, "Fenster", v -> showWindowChromeModel());
-        addButton(toolbar, "Autosave", v -> showAutosaveTickModel());
-        addButton(toolbar, "Fontplan", v -> showLegacyFontSetModel());
-        addButton(toolbar, "Maus", v -> showWindowMoveResizeModel());
-        addButton(toolbar, "ALX Pipe", v -> showAlxPipelineModel());
-        addButton(toolbar, "Buildplan", v -> showApkBuildPlan());
-        addButton(toolbar, "Feedback", v -> showFeedbackDialog());
-        addButton(toolbar, "Info", v -> showInfo());
+        LinearLayout fileToolbar = addToolbarRow(toolbarPanel, "Datei");
+        LinearLayout treeToolbar = addToolbarRow(toolbarPanel, "Baum");
+        LinearLayout textToolbar = addToolbarRow(toolbarPanel, "Text");
+
+        addButton(fileToolbar, "Neu", v -> confirmDiscardThen(this::newDocument));
+        addButton(fileToolbar, "Öffnen", v -> confirmDiscardThen(this::openDocument));
+        addButton(fileToolbar, "Letzte", v -> showRecentFiles());
+        addButton(fileToolbar, "Speichern", v -> saveDocument());
+        addButton(fileToolbar, "Speichern unter", v -> saveDocumentAs());
+        addButton(fileToolbar, "Sicherungen", v -> showBackups());
+        addButton(fileToolbar, "Einstellungen", v -> showSettingsDialog());
+        addButton(fileToolbar, "Config", v -> showConfigSnapshot());
+        addButton(fileToolbar, "FTP öffnen", v -> showFtpDialog(false));
+        addButton(fileToolbar, "FTP speichern", v -> showFtpDialog(true));
+        addButton(fileToolbar, "Schließen", v -> closeDocumentLegacy());
+        addButton(fileToolbar, "Status", v -> showLifecycleStatus());
+        addButton(fileToolbar, "Vorschau", v -> showRichPreview());
+        addButton(fileToolbar, "Drucken", v -> showPrintDialog());
+        addButton(fileToolbar, "Suche", v -> showSearchDialog());
+        addButton(fileToolbar, "Export TXT", v -> exportText());
+        addButton(fileToolbar, "Export ANSI", v -> exportTextAnsi());
+        addButton(fileToolbar, "Export Unicode", v -> exportTextUnicode());
+        addButton(fileToolbar, "Export HTML", v -> exportHtml());
+        addButton(fileToolbar, "Export RTF", v -> exportRtf());
+        addButton(fileToolbar, "Knoten TXT", v -> exportCurrentNodeText());
+        addButton(fileToolbar, "Knoten RTF", v -> exportCurrentNodeRtf());
+        addButton(fileToolbar, "Teilbaum", v -> createUnifiedCurrentNote());
+        addButton(fileToolbar, "Gesamt", v -> createUnifiedRootNote());
+        addButton(fileToolbar, "Passwort", v -> showPasswordChangeDialog());
+        addButton(fileToolbar, "Statistik", v -> showStats());
+        addButton(fileToolbar, "Validieren", v -> showValidationSummary());
+        addButton(fileToolbar, "Diagnose", v -> showDiagnostics());
+        addButton(fileToolbar, "Layout", v -> showLayoutDiagnostics());
+        addButton(fileToolbar, "Launcher", v -> showRuntimeIdentity());
+        addButton(fileToolbar, "Dialoge", v -> showActivationFocusModel());
+        addButton(fileToolbar, "Toolbars", v -> showToolbarToggleModel());
+        addButton(fileToolbar, "Fenster", v -> showWindowChromeModel());
+        addButton(fileToolbar, "Autosave", v -> showAutosaveTickModel());
+        addButton(fileToolbar, "Fontplan", v -> showLegacyFontSetModel());
+        addButton(fileToolbar, "Maus", v -> showWindowMoveResizeModel());
+        addButton(fileToolbar, "ALX Pipe", v -> showAlxPipelineModel());
+        addButton(fileToolbar, "Buildplan", v -> showApkBuildPlan());
+        addButton(fileToolbar, "Feedback", v -> showFeedbackDialog());
+        addButton(fileToolbar, "Info", v -> showInfo());
+
+        addButton(treeToolbar, "Kind", v -> newChild());
+        addButton(treeToolbar, "Daneben", v -> newNext());
+        addButton(treeToolbar, "Auf/Zu", v -> toggleExpanded());
+        addButton(treeToolbar, "Alle auf", v -> expandAllNodes());
+        addButton(treeToolbar, "Alle zu", v -> collapseAllNodes());
+        addButton(treeToolbar, "Löschen", v -> deleteCurrent());
+        addButton(treeToolbar, "Kopieren", v -> copyCurrentNode(false));
+        addButton(treeToolbar, "Ausschneiden", v -> cutCurrentNode());
+        addButton(treeToolbar, "Einfügen", v -> pasteNode());
+        addButton(treeToolbar, "Rauf", v -> moveCurrentUp());
+        addButton(treeToolbar, "Runter", v -> moveCurrentDown());
+        addButton(treeToolbar, "Einrücken", v -> indentCurrent());
+        addButton(treeToolbar, "Ausrücken", v -> outdentCurrent());
+        addButton(treeToolbar, "Vor Ziel", v -> showMoveBeforeTargetDialog());
+        addButton(treeToolbar, "Haftnotiz", v -> showDesktopNoteDialog());
+        addButton(treeToolbar, "Haft Layout", v -> showDesktopNoteLayout());
+        addButton(treeToolbar, "Haftliste", v -> showDesktopNoteTrayList());
+        addButton(treeToolbar, "Haft weg", v -> clearDesktopNotesInSubtree());
+        addButton(treeToolbar, "Wecker", v -> showAlarmDialog());
+
+        addButton(textToolbar, "Datum", v -> insertDate());
+        addButton(textToolbar, "Punkt", v -> insertLegacyBullet());
+        addButton(textToolbar, "Fett", v -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_bold")));
+        addButton(textToolbar, "Kursiv", v -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_italic")));
+        addButton(textToolbar, "Größer", v -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("font_bigger")));
+        addButton(textToolbar, "Kleiner", v -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("font_smaller")));
+        addButton(textToolbar, "Schriftart", v -> showFontFamilyDialog());
+        addButton(textToolbar, "Größe", v -> showFontSizeDialog());
+        addButton(textToolbar, "RTF Format", v -> showRtfFormatDialog());
+        addButton(textToolbar, "Scroll", v -> cycleScrollbars());
+        addButton(textToolbar, "Bild", v -> insertImage());
+        addButton(textToolbar, "RTF Info", v -> showRtfInfoDialog());
+        addButton(textToolbar, "HTML Import", v -> importHtmlNote());
+        addButton(textToolbar, "TXT Import", v -> importTextIntoCurrent());
+        addButton(textToolbar, "RTF Import", v -> importRtfIntoCurrent());
+        addButton(textToolbar, "Farben", v -> showColorDialog());
 
         fileView = new TextView(this);
         fileView.setPadding(dp(10), dp(2), dp(10), dp(4));
@@ -323,41 +483,65 @@ public final class MainActivity extends Activity {
         root.addView(fileView, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout content = new LinearLayout(this);
+        contentLayout = content;
         int widthDp = getResources().getConfiguration().screenWidthDp;
         boolean wide = widthDp >= 700 || getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
         content.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
         content.setPadding(dp(6), dp(0), dp(6), dp(6));
 
         LinearLayout left = new LinearLayout(this);
+        treePane = left;
         left.setOrientation(LinearLayout.VERTICAL);
-        left.setPadding(0, 0, wide ? dp(5) : 0, wide ? 0 : dp(5));
+        left.setPadding(0, 0, wide ? dp(4) : 0, wide ? 0 : dp(5));
         rootTitleView = new TextView(this);
-        rootTitleView.setBackgroundColor(Color.rgb(255, 255, 192));
+        rootTitleView.setBackground(roundedBackground(Color.rgb(255, 250, 205), Color.rgb(226, 213, 145), 8));
         rootTitleView.setTextColor(Color.rgb(30, 30, 30));
         rootTitleView.setPadding(dp(8), dp(7), dp(8), dp(7));
         rootTitleView.setTextSize(15f);
         left.addView(rootTitleView, new LinearLayout.LayoutParams(-1, -2));
         treeList = new ListView(this);
         treeList.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
+        treeList.setBackground(roundedBackground(Color.WHITE, Color.rgb(220, 225, 232), 8));
+        treeList.setDividerHeight(1);
         treeAdapter = new TreeListAdapter(this);
         treeList.setAdapter(treeAdapter);
-        treeList.setOnItemClickListener((parent, view, position, id) -> selectNode(treeAdapter.getItem(position).node, true));
+        final float[] lastTreeTouchX = new float[]{-1f};
+        treeList.setOnTouchListener((view, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) lastTreeTouchX[0] = event.getX();
+            return false;
+        });
+        treeList.setOnItemClickListener((parent, view, position, id) -> {
+            TreeListAdapter.FlatNode row = treeAdapter.getItem(position);
+            NoteNode node = row.node;
+            int toggleEdge = dp(42 + row.depth * 22);
+            if (!node.children.isEmpty() && lastTreeTouchX[0] >= 0f && lastTreeTouchX[0] <= toggleEdge) {
+                toggleNodeExpanded(node, true);
+            } else {
+                selectNode(node, true);
+            }
+        });
         treeList.setOnItemLongClickListener((parent, view, position, id) -> {
-            NoteNode node = treeAdapter.getItem(position).node;
-            node.expanded = !node.expanded;
-            document.markChanged();
-            rebuildTree();
+            toggleNodeExpanded(treeAdapter.getItem(position).node, true);
             return true;
         });
         left.addView(treeList, new LinearLayout.LayoutParams(-1, wide ? -1 : dp(210), 1));
-        content.addView(left, wide ? new LinearLayout.LayoutParams(0, -1, 1.0f) : new LinearLayout.LayoutParams(-1, -2));
+        if (wide) {
+            int initialTreePx = dp(normalizedInitialTreePaneWidthDp(widthDp));
+            content.addView(left, new LinearLayout.LayoutParams(initialTreePx, -1));
+            paneDivider = createPaneDivider();
+            content.addView(paneDivider, new LinearLayout.LayoutParams(dp(18), -1));
+        } else {
+            paneDivider = null;
+            content.addView(left, new LinearLayout.LayoutParams(-1, -2));
+        }
 
         LinearLayout right = new LinearLayout(this);
+        editorPane = right;
         right.setOrientation(LinearLayout.VERTICAL);
         titleEdit = new EditText(this);
         titleEdit.setSingleLine(true);
         titleEdit.setTextSize(16f);
-        titleEdit.setBackgroundColor(Color.rgb(255, 255, 192));
+        titleEdit.setBackground(roundedBackground(Color.rgb(255, 250, 205), Color.rgb(226, 213, 145), 8));
         titleEdit.setPadding(dp(8), 0, dp(8), 0);
         titleEdit.addTextChangedListener(new SimpleWatcher() {
             @Override public void afterTextChanged(Editable s) {
@@ -377,6 +561,7 @@ public final class MainActivity extends Activity {
         editor.setMinLines(12);
         editor.setSingleLine(false);
         editor.setHorizontallyScrolling(false);
+        editor.setBackground(roundedBackground(Color.WHITE, Color.rgb(213, 219, 229), 8));
         applyEditorScrollbars();
         editor.setPadding(dp(10), dp(10), dp(10), dp(10));
         editor.addTextChangedListener(new SimpleWatcher() {
@@ -388,7 +573,8 @@ public final class MainActivity extends Activity {
             }
         });
         right.addView(editor, new LinearLayout.LayoutParams(-1, 0, 1));
-        content.addView(right, wide ? new LinearLayout.LayoutParams(0, -1, 2.1f) : new LinearLayout.LayoutParams(-1, 0, 1));
+        content.addView(right, wide ? new LinearLayout.LayoutParams(0, -1, 1.0f) : new LinearLayout.LayoutParams(-1, 0, 1));
+        if (wide) content.post(() -> applyTreePaneWidthPx(dp(treePaneWidthDp), false));
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
 
         statusView = new TextView(this);
@@ -409,17 +595,154 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private LinearLayout addToolbarRow(LinearLayout parent, String label) {
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        scroll.setFillViewport(false);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(2), 0, dp(2));
+
+        TextView caption = new TextView(this);
+        caption.setText(label);
+        caption.setGravity(Gravity.CENTER);
+        caption.setTextSize(11f);
+        caption.setTypeface(Typeface.DEFAULT_BOLD);
+        caption.setTextColor(Color.rgb(86, 96, 112));
+        caption.setBackground(roundedBackground(Color.rgb(232, 236, 242), Color.rgb(210, 217, 226), 10));
+        LinearLayout.LayoutParams captionParams = new LinearLayout.LayoutParams(dp(TOOLBAR_BUTTON_DP), dp(TOOLBAR_BUTTON_DP));
+        captionParams.setMargins(dp(TOOLBAR_BUTTON_MARGIN_DP), dp(2), dp(6), dp(2));
+        row.addView(caption, captionParams);
+
+        scroll.addView(row, new HorizontalScrollView.LayoutParams(-2, -2));
+        parent.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
+        return row;
+    }
+
     private void addButton(LinearLayout toolbar, String label, View.OnClickListener listener) {
         LegacyToolbarPresentation.ButtonSpec spec = LegacyToolbarPresentation.forLabel(label);
-        Button b = new Button(this);
+        TextView b = new TextView(this);
         b.setText(spec.displayText(true));
-        b.setAllCaps(false);
-        b.setMinWidth(dp(44));
-        b.setMinHeight(dp(44));
+        b.setGravity(Gravity.CENTER);
+        b.setSingleLine(true);
+        b.setIncludeFontPadding(false);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTextSize(toolbarGlyphTextSize(spec.displayText(true)));
+        b.setTextColor(Color.rgb(35, 45, 58));
+        b.setBackground(toolbarButtonBackground());
+        b.setClickable(true);
+        b.setFocusable(true);
         b.setContentDescription(spec.contentDescription());
         if (Build.VERSION.SDK_INT >= 26) b.setTooltipText(spec.contentDescription());
         b.setOnClickListener(listener);
-        toolbar.addView(b, new LinearLayout.LayoutParams(-2, dp(LegacyToolbarPresentation.MAIN_TOOLBAR_BUTTON_HEIGHT_DP)));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(TOOLBAR_BUTTON_DP), dp(TOOLBAR_BUTTON_DP));
+        params.setMargins(dp(TOOLBAR_BUTTON_MARGIN_DP), dp(2), dp(TOOLBAR_BUTTON_MARGIN_DP), dp(2));
+        toolbar.addView(b, params);
+    }
+
+    private float toolbarGlyphTextSize(String glyph) {
+        int len = glyph == null ? 0 : glyph.length();
+        if (len >= 5) return 9.5f;
+        if (len == 4) return 11f;
+        if (len == 3) return 13f;
+        return 20f;
+    }
+
+    private Drawable toolbarButtonBackground() {
+        GradientDrawable base = new GradientDrawable();
+        base.setShape(GradientDrawable.RECTANGLE);
+        base.setColor(Color.WHITE);
+        base.setCornerRadius(dp(11));
+        base.setStroke(dp(1), Color.rgb(208, 216, 226));
+        return new RippleDrawable(ColorStateList.valueOf(Color.rgb(207, 224, 255)), base, null);
+    }
+
+    private Drawable roundedBackground(int fillColor, int strokeColor, int radiusDp) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.RECTANGLE);
+        bg.setColor(fillColor);
+        bg.setCornerRadius(dp(radiusDp));
+        bg.setStroke(dp(1), strokeColor);
+        return bg;
+    }
+
+    private View createPaneDivider() {
+        TextView divider = new TextView(this);
+        divider.setText("⋮");
+        divider.setGravity(Gravity.CENTER);
+        divider.setTextSize(26f);
+        divider.setTextColor(Color.rgb(90, 104, 124));
+        divider.setBackground(roundedBackground(Color.rgb(232, 236, 242), Color.rgb(205, 214, 226), 9));
+        divider.setContentDescription("Trenner: mit dem Finger ziehen, um Baum und RTF-Text breiter oder schmaler zu machen");
+        if (Build.VERSION.SDK_INT >= 26) divider.setTooltipText("Breite zwischen Baum und RTF ziehen");
+        final float[] startRawX = new float[]{0f};
+        final int[] startWidth = new int[]{0};
+        divider.setOnTouchListener((view, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    startRawX[0] = event.getRawX();
+                    startWidth[0] = treePane == null ? dp(treePaneWidthDp) : treePane.getWidth();
+                    view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    applyTreePaneWidthPx(startWidth[0] + Math.round(event.getRawX() - startRawX[0]), false);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    applyTreePaneWidthPx(startWidth[0] + Math.round(event.getRawX() - startRawX[0]), true);
+                    status("Baumbreite: " + treePaneWidthDp + " dp");
+                    return true;
+                default:
+                    return true;
+            }
+        });
+        return divider;
+    }
+
+    private int normalizedInitialTreePaneWidthDp(int screenWidthDp) {
+        int base = LegacySettings.normalizeAndroidTreePaneWidthDp(treePaneWidthDp);
+        int max = Math.max(TREE_PANE_MIN_DP, screenWidthDp - EDITOR_PANE_MIN_DP - 36);
+        return Math.max(TREE_PANE_MIN_DP, Math.min(base, max));
+    }
+
+    private int currentTreePaneWidthDp() {
+        if (treePane != null && treePane.getWidth() > 0) {
+            return LegacySettings.normalizeAndroidTreePaneWidthDp(Math.round(treePane.getWidth() / getResources().getDisplayMetrics().density));
+        }
+        return LegacySettings.normalizeAndroidTreePaneWidthDp(treePaneWidthDp);
+    }
+
+    private void applyTreePaneWidthPx(int requestedPx, boolean persist) {
+        if (treePane == null || contentLayout == null) return;
+        int total = contentLayout.getWidth();
+        if (total <= 0) total = getResources().getDisplayMetrics().widthPixels - dp(12);
+        int dividerWidth = paneDivider == null || paneDivider.getWidth() <= 0 ? dp(18) : paneDivider.getWidth();
+        int minTree = dp(TREE_PANE_MIN_DP);
+        int minEditor = dp(EDITOR_PANE_MIN_DP);
+        int maxTree = Math.max(minTree, total - dividerWidth - minEditor);
+        int clamped = Math.max(minTree, Math.min(requestedPx, maxTree));
+        LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) treePane.getLayoutParams();
+        params.width = clamped;
+        params.weight = 0f;
+        treePane.setLayoutParams(params);
+        treePaneWidthDp = LegacySettings.normalizeAndroidTreePaneWidthDp(Math.round(clamped / getResources().getDisplayMetrics().density));
+        if (persist) saveTreePaneWidthSetting();
+    }
+
+    private void saveTreePaneWidthSetting() {
+        if (settings == null) settings = AndroidSettingsStore.load(this);
+        settings.androidTreePaneWidthDp = LegacySettings.normalizeAndroidTreePaneWidthDp(treePaneWidthDp);
+        AndroidSettingsStore.save(this, settings);
+    }
+
+    private void toggleNodeExpanded(NoteNode node, boolean showMessage) {
+        if (node == null || node.children.isEmpty()) return;
+        node.expanded = !node.expanded;
+        document.markChanged();
+        rebuildTree();
+        treeAdapter.setSelected(currentNode);
+        if (showMessage) status(node.expanded ? "Knoten geöffnet" : "Knoten geschlossen");
     }
 
     private void applyEditorScrollbars() {
@@ -581,10 +904,7 @@ public final class MainActivity extends Activity {
             document.changed = true;
             editorDirty = false;
             titleDirty = false;
-            rebuildTree();
-            selectNode(document.ensureRoot(), false);
-            updateTitle();
-            status("Sicherung geöffnet: bitte mit 'Speichern unter' sichern");
+            finishLoadedDocument("Sicherung geöffnet: bitte mit 'Speichern unter' sichern");
         } catch (AlxException.PasswordRequired e) {
             showPasswordDialog("", p -> openBackupFile(file, p));
         } catch (Exception e) {
@@ -663,10 +983,7 @@ public final class MainActivity extends Activity {
             document.markSaved();
             editorDirty = false;
             titleDirty = false;
-            rebuildTree();
-            selectNode(document.ensureRoot(), false);
-            updateTitle();
-            status("Geöffnet: " + file.getAbsolutePath());
+            finishLoadedDocument("Geöffnet: " + file.getAbsolutePath());
         } catch (AlxException.PasswordRequired e) {
             showPasswordDialog("", p -> openRawFile(file, p));
         } catch (Exception e) {
@@ -886,10 +1203,7 @@ public final class MainActivity extends Activity {
             rememberCurrentFile(target.safeDisplayUrl());
             editorDirty = false;
             titleDirty = false;
-            rebuildTree();
-            selectNode(document.ensureRoot(), false);
-            updateTitle();
-            status("FTP geöffnet: " + target.safeDisplayUrl());
+            finishLoadedDocument("FTP geöffnet: " + target.safeDisplayUrl());
         } catch (AlxException.PasswordRequired e) {
             final byte[] copy = data;
             showPasswordDialog("", p -> openFtpBytes(target, copy, p));
@@ -1014,10 +1328,11 @@ public final class MainActivity extends Activity {
 
     private void toggleExpanded() {
         if (currentNode == null) return;
-        currentNode.expanded = !currentNode.expanded;
-        document.markChanged();
-        rebuildTree();
-        status(currentNode.expanded ? "Knoten geöffnet" : "Knoten geschlossen");
+        if (currentNode.children.isEmpty()) {
+            status("Dieser Knoten hat keine Unterknoten");
+            return;
+        }
+        toggleNodeExpanded(currentNode, true);
     }
 
     private void expandAllNodes() {
@@ -1271,7 +1586,7 @@ public final class MainActivity extends Activity {
     }
 
     private void applyRtfFormatAction(LegacyRichTextToolbar.ActionSpec spec) {
-        if (spec == null || currentNode == null) return;
+        if (spec == null || currentNode == null || editor == null) return;
         if ("legacy_bullet".equals(spec.action)) {
             insertLegacyBullet();
             return;
@@ -1296,14 +1611,44 @@ public final class MainActivity extends Activity {
             showFontSizeDialog();
             return;
         }
-        String plain = editor.getText().toString();
-        int start = editor.getSelectionStart();
-        int end = editor.getSelectionEnd();
-        currentNode.rtf = LegacyRtfSelectionFormatter.applyToSelection(plain, start, end, spec.action);
-        editorDirty = false;
-        document.markChanged();
-        updateTitle();
-        status("RTF-Format gespeichert: " + spec.tooltip + " — Vorschau zeigt das Ergebnis");
+        applyEditorFormatAction(spec.action, spec.tooltip);
+    }
+
+    private void applyEditorFormatAction(String action, String label) {
+        if (editor == null) return;
+        Spannable text = editor.getText();
+        int[] range = editorSelectionRange(true);
+        if (range[1] <= range[0]) {
+            status("Kein Text zum Formatieren");
+            return;
+        }
+        String normalized = action == null ? "" : action;
+        if ("format_regular".equals(normalized)) {
+            removeCharacterFormatting(text, range[0], range[1]);
+            markEditorRichChanged("Zeichenformat zurückgesetzt");
+        } else if ("format_bold".equals(normalized)) {
+            text.setSpan(new StyleSpan(Typeface.BOLD), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            markEditorRichChanged("Fett angewendet");
+        } else if ("format_italic".equals(normalized)) {
+            text.setSpan(new StyleSpan(Typeface.ITALIC), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            markEditorRichChanged("Kursiv angewendet");
+        } else if ("format_underline".equals(normalized)) {
+            text.setSpan(new UnderlineSpan(), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            markEditorRichChanged("Unterstrichen angewendet");
+        } else if ("format_strike".equals(normalized)) {
+            text.setSpan(new StrikethroughSpan(), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            markEditorRichChanged("Durchgestrichen angewendet");
+        } else if ("font_bigger".equals(normalized)) {
+            int next = LegacyRichTextToolbar.nextFontSize(currentSelectionPointSize(), +1);
+            applyFontSizeToSelection(next);
+        } else if ("font_smaller".equals(normalized)) {
+            int next = LegacyRichTextToolbar.nextFontSize(currentSelectionPointSize(), -1);
+            applyFontSizeToSelection(next);
+        } else if (normalized.startsWith("align_")) {
+            applyAlignmentToSelection(normalized);
+        } else {
+            status(label == null || label.isEmpty() ? "RTF-Aktion nicht umgesetzt" : label);
+        }
     }
 
     private void showRtfColorPalette(LegacyColorDialogModel.Role role) {
@@ -1319,14 +1664,26 @@ public final class MainActivity extends Activity {
 
     private void applyRtfColorToSelection(LegacyColorDialogModel.Decision decision) {
         if (currentNode == null || editor == null || decision == null || !decision.valid) return;
-        String plain = editor.getText().toString();
-        int start = editor.getSelectionStart();
-        int end = editor.getSelectionEnd();
-        currentNode.rtf = LegacyRtfSelectionFormatter.applyColorToSelection(plain, start, end, decision);
-        editorDirty = false;
-        document.markChanged();
-        updateTitle();
-        status((decision.role == LegacyColorDialogModel.Role.RTF_HIGHLIGHT ? "RTF-Hervorhebung" : "RTF-Textfarbe") + " gespeichert: " + decision.css);
+        int[] range = editorSelectionRange(true);
+        if (range[1] <= range[0]) {
+            status("Kein Text zum Färben");
+            return;
+        }
+        Spannable text = editor.getText();
+        try {
+            int color = Color.parseColor(decision.css);
+            if (decision.role == LegacyColorDialogModel.Role.RTF_HIGHLIGHT) {
+                removeOverlappingSpans(text, range[0], range[1], BackgroundColorSpan.class);
+                text.setSpan(new BackgroundColorSpan(color), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                markEditorRichChanged("RTF-Hervorhebung angewendet: " + decision.css);
+            } else {
+                removeOverlappingSpans(text, range[0], range[1], ForegroundColorSpan.class);
+                text.setSpan(new ForegroundColorSpan(color), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                markEditorRichChanged("RTF-Textfarbe angewendet: " + decision.css);
+            }
+        } catch (Exception e) {
+            error("RTF-Farbe", e.getMessage());
+        }
     }
 
     private void showFontFamilyDialog() {
@@ -1335,17 +1692,7 @@ public final class MainActivity extends Activity {
         String[] labels = families.toArray(new String[0]);
         new AlertDialog.Builder(this)
                 .setTitle("Schriftart")
-                .setItems(labels, (d, which) -> {
-                    String family = families.get(which);
-                    String plain = editor.getText().toString();
-                    int start = editor.getSelectionStart();
-                    int end = editor.getSelectionEnd();
-                    currentNode.rtf = LegacyRtfSelectionFormatter.applyFontFamilyToSelection(plain, start, end, family);
-                    editorDirty = false;
-                    document.markChanged();
-                    updateTitle();
-                    status("Schriftart gespeichert: " + family + " — Vorschau zeigt das Ergebnis");
-                })
+                .setItems(labels, (d, which) -> applyFontFamilyToSelection(families.get(which)))
                 .setNegativeButton("Abbrechen", null)
                 .show();
     }
@@ -1395,16 +1742,120 @@ public final class MainActivity extends Activity {
         dialog.show();
     }
 
+    private void applyFontFamilyToSelection(String family) {
+        if (currentNode == null || editor == null) return;
+        int[] range = editorSelectionRange(true);
+        if (range[1] <= range[0]) {
+            status("Kein Text für Schriftart");
+            return;
+        }
+        Spannable text = editor.getText();
+        String clean = LegacyRichTextToolbar.normalizeFontFamily(family);
+        removeOverlappingSpans(text, range[0], range[1], RtfTypefaceSpan.class);
+        text.setSpan(new RtfTypefaceSpan(clean), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        markEditorRichChanged("Schriftart angewendet: " + clean);
+    }
+
     private void applyFontSizeToSelection(int size) {
         if (currentNode == null || editor == null) return;
-        String plain = editor.getText().toString();
-        int start = editor.getSelectionStart();
-        int end = editor.getSelectionEnd();
-        currentNode.rtf = LegacyRtfSelectionFormatter.applyFontSizeToSelection(plain, start, end, size);
-        editorDirty = false;
-        document.markChanged();
+        int clamped = LegacyRichTextToolbar.normalizeFontSize(size);
+        int[] range = editorSelectionRange(true);
+        if (range[1] <= range[0]) {
+            status("Kein Text für Schriftgröße");
+            return;
+        }
+        Spannable text = editor.getText();
+        removeOverlappingSpans(text, range[0], range[1], AbsoluteSizeSpan.class);
+        text.setSpan(new AbsoluteSizeSpan(clamped, true), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        markEditorRichChanged("Schriftgröße angewendet: " + clamped + " pt");
+    }
+
+    private void applyAlignmentToSelection(String action) {
+        if (editor == null) return;
+        Spannable text = editor.getText();
+        if (text.length() == 0) return;
+        int[] selected = editorSelectionRange(true);
+        int[] para = paragraphRange(text.toString(), selected[0], selected[1]);
+        removeOverlappingSpans(text, para[0], para[1], AlignmentSpan.Standard.class);
+        Layout.Alignment alignment = Layout.Alignment.ALIGN_NORMAL;
+        String message = "Linksbündig angewendet";
+        if ("align_center".equals(action)) { alignment = Layout.Alignment.ALIGN_CENTER; message = "Zentriert angewendet"; }
+        else if ("align_right".equals(action)) { alignment = Layout.Alignment.ALIGN_OPPOSITE; message = "Rechtsbündig angewendet"; }
+        else if ("align_justify".equals(action)) { alignment = Layout.Alignment.ALIGN_NORMAL; message = "Blocksatz mobil als Linksbündig gespeichert"; }
+        if (para[1] > para[0]) text.setSpan(new AlignmentSpan.Standard(alignment), para[0], para[1], Spanned.SPAN_PARAGRAPH);
+        markEditorRichChanged(message);
+    }
+
+    private int[] editorSelectionRange(boolean wholeIfEmpty) {
+        int len = editor == null || editor.getText() == null ? 0 : editor.getText().length();
+        int start = editor == null ? 0 : Math.max(0, Math.min(editor.getSelectionStart(), len));
+        int end = editor == null ? start : Math.max(0, Math.min(editor.getSelectionEnd(), len));
+        if (end < start) { int tmp = start; start = end; end = tmp; }
+        if (start == end && wholeIfEmpty) { start = 0; end = len; }
+        return new int[]{start, end};
+    }
+
+    private int currentSelectionPointSize() {
+        if (editor == null || editor.getText() == null || editor.getText().length() == 0) return 12;
+        int pos = Math.max(0, Math.min(editor.getSelectionStart(), editor.getText().length() - 1));
+        AbsoluteSizeSpan[] spans = editor.getText().getSpans(pos, pos + 1, AbsoluteSizeSpan.class);
+        if (spans.length > 0) return Math.max(1, spans[spans.length - 1].getSize());
+        return 12;
+    }
+
+    private void removeCharacterFormatting(Spannable text, int start, int end) {
+        removeOverlappingSpans(text, start, end, StyleSpan.class);
+        removeOverlappingSpans(text, start, end, UnderlineSpan.class);
+        removeOverlappingSpans(text, start, end, StrikethroughSpan.class);
+        removeOverlappingSpans(text, start, end, ForegroundColorSpan.class);
+        removeOverlappingSpans(text, start, end, BackgroundColorSpan.class);
+        removeOverlappingSpans(text, start, end, AbsoluteSizeSpan.class);
+        removeOverlappingSpans(text, start, end, RtfTypefaceSpan.class);
+        removeOverlappingSpans(text, start, end, SuperscriptSpan.class);
+        removeOverlappingSpans(text, start, end, SubscriptSpan.class);
+        int[] para = paragraphRange(text.toString(), start, end);
+        removeOverlappingSpans(text, para[0], para[1], AlignmentSpan.Standard.class);
+        removeOverlappingSpans(text, para[0], para[1], LeadingMarginSpan.Standard.class);
+    }
+
+    private void removeOverlappingSpans(Spannable text, int start, int end, Class<?> spanClass) {
+        if (text == null || end <= start) return;
+        Object[] spans = text.getSpans(start, end, spanClass);
+        for (Object span : spans) {
+            int oldStart = text.getSpanStart(span);
+            int oldEnd = text.getSpanEnd(span);
+            if (oldEnd <= start || oldStart >= end) continue;
+            int flags = text.getSpanFlags(span);
+            Object left = cloneEditorSpan(span);
+            Object right = cloneEditorSpan(span);
+            text.removeSpan(span);
+            if (oldStart < start && left != null) text.setSpan(left, oldStart, start, flags);
+            if (oldEnd > end && right != null) text.setSpan(right, end, oldEnd, flags);
+        }
+    }
+
+    private Object cloneEditorSpan(Object span) {
+        if (span instanceof StyleSpan) return new StyleSpan(((StyleSpan) span).getStyle());
+        if (span instanceof UnderlineSpan) return new UnderlineSpan();
+        if (span instanceof StrikethroughSpan) return new StrikethroughSpan();
+        if (span instanceof ForegroundColorSpan) return new ForegroundColorSpan(((ForegroundColorSpan) span).getForegroundColor());
+        if (span instanceof BackgroundColorSpan) return new BackgroundColorSpan(((BackgroundColorSpan) span).getBackgroundColor());
+        if (span instanceof AbsoluteSizeSpan) return new AbsoluteSizeSpan(((AbsoluteSizeSpan) span).getSize(), ((AbsoluteSizeSpan) span).getDip());
+        if (span instanceof RtfTypefaceSpan) return new RtfTypefaceSpan(((RtfTypefaceSpan) span).familyName);
+        if (span instanceof SuperscriptSpan) return new SuperscriptSpan();
+        if (span instanceof SubscriptSpan) return new SubscriptSpan();
+        if (span instanceof URLSpan) return new URLSpan(((URLSpan) span).getURL());
+        if (span instanceof AlignmentSpan.Standard) return new AlignmentSpan.Standard(((AlignmentSpan.Standard) span).getAlignment());
+        if (span instanceof LeadingMarginSpan.Standard) return new LeadingMarginSpan.Standard(((LeadingMarginSpan.Standard) span).getLeadingMargin(true), ((LeadingMarginSpan.Standard) span).getLeadingMargin(false));
+        if (span instanceof RtfRawSpan) return new RtfRawSpan(((RtfRawSpan) span).rawRtf, ((RtfRawSpan) span).kind);
+        return null;
+    }
+
+    private void markEditorRichChanged(String message) {
+        editorDirty = true;
+        if (document != null) document.markChanged();
         updateTitle();
-        status("Schriftgröße gespeichert: " + size + " pt — Vorschau zeigt das Ergebnis");
+        status(message == null || message.isEmpty() ? "RTF-Format angewendet" : message);
     }
 
     private void insertImage() {
@@ -1413,25 +1864,34 @@ public final class MainActivity extends Activity {
     }
 
     private void insertImageFromUri(Uri uri) {
-        if (currentNode == null || uri == null) return;
+        if (currentNode == null || uri == null || editor == null) return;
         try {
-            saveCurrentEditorToNode();
-            String before = currentNode.rtf == null ? "" : currentNode.rtf;
-            String after = RtfUtils.appendImageToRtf(before, readAll(uri), getContentResolver().getType(uri));
-            if (after.equals(before)) {
+            byte[] bytes = readAll(uri);
+            String mime = getContentResolver().getType(uri);
+            String rawPicture = RtfUtils.rtfPictureFromImage(bytes, mime);
+            if (rawPicture == null || rawPicture.isEmpty()) {
                 error("Bild einfügen", "Dieses Bildformat kann nicht als ALX/RTF-Bild gespeichert werden. Unterstützt sind PNG, JPEG und BMP.");
                 return;
             }
-            currentNode.rtf = after;
-            document.markChanged();
-            editorDirty = false;
-            selectNode(currentNode, false);
-            updateTitle();
-            status("Bild eingefügt");
+            Drawable drawable = imageDrawable(bytes, 0, 0);
+            if (drawable == null) {
+                error("Bild einfügen", "Das Bild konnte nicht dekodiert werden.");
+                return;
+            }
+            Editable editable = editor.getText();
+            Spannable text = editable;
+            int start = Math.max(0, Math.min(editor.getSelectionStart(), text.length()));
+            int end = Math.max(0, Math.min(editor.getSelectionEnd(), text.length()));
+            if (end < start) { int tmp = start; start = end; end = tmp; }
+            editable.replace(start, end, RTF_IMAGE_CHAR);
+            text.setSpan(new RtfImageSpan(drawable, rawPicture, mime, bytes, 0, 0), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            editor.setSelection(start + 1);
+            markEditorRichChanged("Bild eingefügt und sichtbar eingebettet");
         } catch (Exception e) {
             error("Bild einfügen", e.getMessage());
         }
     }
+
 
 
     private void showPrintDialog() {
@@ -1838,6 +2298,371 @@ public final class MainActivity extends Activity {
         return node == null || node.title == null || node.title.isEmpty() ? "..." : node.title;
     }
 
+
+    private SpannableStringBuilder rtfToEditorText(String rtf) {
+        SpannableStringBuilder out = new SpannableStringBuilder();
+        List<RtfContentPart> parts = RtfUtils.rtfToContentParts(rtf == null ? "" : rtf);
+        if (parts.isEmpty()) return out;
+        for (RtfContentPart part : parts) {
+            if (part instanceof RtfImagePart) {
+                appendEditorImage(out, (RtfImagePart) part);
+            } else if (part instanceof RtfHyperlink) {
+                RtfHyperlink link = (RtfHyperlink) part;
+                int start = out.length();
+                out.append(link.text == null || link.text.isEmpty() ? link.url : link.text);
+                int end = out.length();
+                applyRtfStyleSpan(out, start, end, link.style);
+                if (end > start && link.url != null && !link.url.isEmpty()) {
+                    out.setSpan(new URLSpan(link.url), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+            } else if (part instanceof RtfField) {
+                int start = out.length();
+                String text = part.text == null || part.text.isEmpty() ? "[Feld]" : part.text;
+                out.append(text);
+                int end = out.length();
+                applyRtfStyleSpan(out, start, end, part.style);
+                if (end > start && part.rtf != null && !part.rtf.isEmpty()) out.setSpan(new RtfRawSpan(part.rtf, "field"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            } else if (part instanceof RtfObject) {
+                int start = out.length();
+                String text = part.text == null || part.text.isEmpty() ? RtfUtils.LEGACY_OBJECT_PLACEHOLDER : part.text;
+                out.append(text);
+                int end = out.length();
+                applyRtfStyleSpan(out, start, end, part.style);
+                if (end > start && part.rtf != null && !part.rtf.isEmpty()) out.setSpan(new RtfRawSpan(part.rtf, "object"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            } else {
+                int start = out.length();
+                out.append(part.text == null ? "" : part.text);
+                applyRtfStyleSpan(out, start, out.length(), part.style);
+            }
+        }
+        return out;
+    }
+
+    private void appendEditorImage(SpannableStringBuilder out, RtfImagePart part) {
+        int start = out.length();
+        Drawable drawable = imageDrawable(part.imageData, part.widthTwips, part.heightTwips);
+        if (drawable == null) {
+            out.append(RtfUtils.LEGACY_IMAGE_PLACEHOLDER);
+            applyRtfStyleSpan(out, start, out.length(), part.style);
+            if (out.length() > start && part.rtf != null && !part.rtf.isEmpty()) out.setSpan(new RtfRawSpan(part.rtf, "image"), start, out.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            return;
+        }
+        out.append(RTF_IMAGE_CHAR);
+        out.setSpan(new RtfImageSpan(drawable, part.rtf, part.mimeType, part.imageData, part.widthTwips, part.heightTwips), start, out.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    }
+
+    private Drawable imageDrawable(byte[] data, int widthTwips, int heightTwips) {
+        if (data == null || data.length == 0) return null;
+        Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
+        if (bitmap == null) return null;
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        int width = widthTwips > 0 ? Math.round((widthTwips / 15.0f) * dm.density) : bitmap.getWidth();
+        int height = heightTwips > 0 ? Math.round((heightTwips / 15.0f) * dm.density) : bitmap.getHeight();
+        if (width <= 0) width = bitmap.getWidth();
+        if (height <= 0) height = bitmap.getHeight();
+        int maxWidth = Math.max(dp(120), dm.widthPixels - dp(48));
+        if (width > maxWidth && width > 0) {
+            float scale = maxWidth / (float) width;
+            width = maxWidth;
+            height = Math.max(1, Math.round(height * scale));
+        }
+        BitmapDrawable drawable = new BitmapDrawable(getResources(), bitmap);
+        drawable.setBounds(0, 0, Math.max(1, width), Math.max(1, height));
+        return drawable;
+    }
+
+    private void applyRtfStyleSpan(Spannable spannable, int start, int end, RtfTextStyle style) {
+        if (spannable == null || style == null || end <= start) return;
+        if (style.bold) spannable.setSpan(new StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (style.italic) spannable.setSpan(new StyleSpan(Typeface.ITALIC), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (style.underline) spannable.setSpan(new UnderlineSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (style.strike) spannable.setSpan(new StrikethroughSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (style.fgColor != null) {
+            try { spannable.setSpan(new ForegroundColorSpan(Color.parseColor(style.fgColor)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE); } catch (Exception ignored) {}
+        }
+        if (style.bgColor != null) {
+            try { spannable.setSpan(new BackgroundColorSpan(Color.parseColor(style.bgColor)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE); } catch (Exception ignored) {}
+        }
+        if (style.fontFamily != null && !style.fontFamily.trim().isEmpty()) spannable.setSpan(new RtfTypefaceSpan(style.fontFamily), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (style.fontSizeHalfPoints != null && style.fontSizeHalfPoints > 0) spannable.setSpan(new AbsoluteSizeSpan(Math.max(1, Math.round(style.fontSizeHalfPoints / 2.0f)), true), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if ("super".equals(style.vertical)) spannable.setSpan(new SuperscriptSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if ("sub".equals(style.vertical)) spannable.setSpan(new SubscriptSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (style.align != null && !style.align.isEmpty()) {
+            Layout.Alignment alignment = Layout.Alignment.ALIGN_NORMAL;
+            if ("center".equals(style.align)) alignment = Layout.Alignment.ALIGN_CENTER;
+            else if ("right".equals(style.align)) alignment = Layout.Alignment.ALIGN_OPPOSITE;
+            int[] para = paragraphRange(spannable.toString(), start, end);
+            if (para[1] > para[0]) spannable.setSpan(new AlignmentSpan.Standard(alignment), para[0], para[1], Spanned.SPAN_PARAGRAPH);
+        }
+        if (style.leftIndentTwips > 0 || style.firstIndentTwips != 0) {
+            int first = twipsToPx(style.leftIndentTwips + style.firstIndentTwips);
+            int rest = twipsToPx(style.leftIndentTwips);
+            int[] para = paragraphRange(spannable.toString(), start, end);
+            if (para[1] > para[0]) spannable.setSpan(new LeadingMarginSpan.Standard(Math.max(0, first), Math.max(0, rest)), para[0], para[1], Spanned.SPAN_PARAGRAPH);
+        }
+    }
+
+    private String editorContentToRtf() {
+        if (editor == null) return "";
+        Editable editable = editor.getText();
+        if (!(editable instanceof Spanned)) return RtfUtils.plainTextToRtf(editable == null ? "" : editable.toString());
+        return spannedToRtf((Spanned) editable);
+    }
+
+    private String spannedToRtf(Spanned text) {
+        Map<String, Integer> fonts = collectEditorFonts(text);
+        Map<String, Integer> colors = collectEditorColors(text);
+        StringBuilder out = new StringBuilder(text == null ? 128 : text.length() * 2 + 128);
+        out.append("{\\rtf1\\ansi\\ansicpg1252\\deff0");
+        out.append(editorRtfFontTable(fonts));
+        out.append(editorRtfColorTable(colors));
+        out.append("\\viewkind4\\uc1\\pard ");
+        out.append(emitEditorRtfBody(text, fonts, colors));
+        out.append("\\par}");
+        return out.toString();
+    }
+
+    private Map<String, Integer> collectEditorFonts(Spanned text) {
+        LinkedHashMap<String, Integer> fonts = new LinkedHashMap<>();
+        if (text == null) return fonts;
+        RtfTypefaceSpan[] spans = text.getSpans(0, text.length(), RtfTypefaceSpan.class);
+        for (RtfTypefaceSpan span : spans) addFont(fonts, span.familyName);
+        return fonts;
+    }
+
+    private Map<String, Integer> collectEditorColors(Spanned text) {
+        LinkedHashMap<String, Integer> colors = new LinkedHashMap<>();
+        if (text == null) return colors;
+        for (ForegroundColorSpan span : text.getSpans(0, text.length(), ForegroundColorSpan.class)) addColor(colors, colorToCss(span.getForegroundColor()));
+        for (BackgroundColorSpan span : text.getSpans(0, text.length(), BackgroundColorSpan.class)) addColor(colors, colorToCss(span.getBackgroundColor()));
+        return colors;
+    }
+
+    private void addFont(Map<String, Integer> fonts, String family) {
+        String clean = LegacyRichTextToolbar.normalizeFontFamily(family);
+        if (!fonts.containsKey(clean)) fonts.put(clean, fonts.size() + 1);
+    }
+
+    private void addColor(Map<String, Integer> colors, String color) {
+        if (color == null || !color.matches("#[0-9a-fA-F]{6}")) return;
+        String clean = color.toLowerCase(Locale.ROOT);
+        if (!colors.containsKey(clean)) colors.put(clean, colors.size() + 1);
+    }
+
+    private String editorRtfFontTable(Map<String, Integer> fonts) {
+        StringBuilder out = new StringBuilder();
+        out.append("{\\fonttbl{\\f0\\fnil\\fcharset0 Microsoft Sans Serif;}");
+        for (Map.Entry<String, Integer> entry : fonts.entrySet()) {
+            out.append("{\\f").append(entry.getValue()).append("\\fnil\\fcharset0 ").append(cleanRtfFontName(entry.getKey())).append(";}");
+        }
+        out.append("}");
+        return out.toString();
+    }
+
+    private String editorRtfColorTable(Map<String, Integer> colors) {
+        if (colors == null || colors.isEmpty()) return "";
+        StringBuilder out = new StringBuilder("{\\colortbl ;");
+        for (String color : colors.keySet()) {
+            int r = Integer.parseInt(color.substring(1, 3), 16);
+            int g = Integer.parseInt(color.substring(3, 5), 16);
+            int b = Integer.parseInt(color.substring(5, 7), 16);
+            out.append("\\red").append(r).append("\\green").append(g).append("\\blue").append(b).append(';');
+        }
+        out.append('}');
+        return out.toString();
+    }
+
+    private String emitEditorRtfBody(Spanned spanned, Map<String, Integer> fonts, Map<String, Integer> colors) {
+        if (spanned == null || spanned.length() == 0) return "";
+        String plain = spanned.toString();
+        StringBuilder out = new StringBuilder(plain.length() * 2);
+        int pos = 0;
+        while (pos < plain.length()) {
+            RtfImageSpan image = imageSpanAt(spanned, pos);
+            if (image != null) {
+                String raw = image.rawRtf == null || image.rawRtf.isEmpty() ? RtfUtils.rtfPictureFromImage(image.imageData, image.mimeType) : image.rawRtf;
+                out.append(raw == null || raw.isEmpty() ? RtfUtils.rtfEscapeText(RtfUtils.LEGACY_IMAGE_PLACEHOLDER) : raw);
+                pos = Math.max(pos + 1, spanned.getSpanEnd(image));
+                continue;
+            }
+            if (plain.startsWith(RTF_IMAGE_CHAR, pos)) {
+                out.append(RtfUtils.rtfEscapeText(RtfUtils.LEGACY_IMAGE_PLACEHOLDER));
+                pos++;
+                continue;
+            }
+            RtfRawSpan raw = rawSpanAt(spanned, pos);
+            if (raw != null && raw.rawRtf != null && !raw.rawRtf.isEmpty() && spanned.getSpanStart(raw) == pos) {
+                out.append(raw.rawRtf);
+                pos = Math.max(pos + 1, spanned.getSpanEnd(raw));
+                continue;
+            }
+            int next = spanned.nextSpanTransition(pos, plain.length(), CharacterStyle.class);
+            next = Math.min(next, spanned.nextSpanTransition(pos, plain.length(), ParagraphStyle.class));
+            next = Math.min(next, spanned.nextSpanTransition(pos, plain.length(), RtfRawSpan.class));
+            int nextImage = plain.indexOf(RTF_IMAGE_CHAR, pos + 1);
+            if (nextImage >= 0) next = Math.min(next, nextImage);
+            if (next <= pos) next = pos + 1;
+            String segment = plain.substring(pos, next);
+            RtfTextStyle style = styleAt(spanned, pos);
+            URLSpan link = urlSpanAt(spanned, pos);
+            if (link != null && link.getURL() != null && !link.getURL().isEmpty() && spanned.getSpanStart(link) <= pos && spanned.getSpanEnd(link) >= next) {
+                out.append(rtfHyperlinkField(link.getURL(), segment, rtfStylePrefix(style, colors, fonts)));
+            } else {
+                out.append(emitRtfText(segment, style, colors, fonts));
+            }
+            pos = next;
+        }
+        return out.toString();
+    }
+
+    private RtfImageSpan imageSpanAt(Spanned spanned, int pos) {
+        int end = Math.min(spanned.length(), pos + 1);
+        if (end <= pos) return null;
+        RtfImageSpan[] spans = spanned.getSpans(pos, end, RtfImageSpan.class);
+        for (RtfImageSpan span : spans) {
+            if (spanned.getSpanStart(span) <= pos && spanned.getSpanEnd(span) > pos) return span;
+        }
+        return null;
+    }
+
+    private RtfRawSpan rawSpanAt(Spanned spanned, int pos) {
+        int end = Math.min(spanned.length(), pos + 1);
+        if (end <= pos) return null;
+        RtfRawSpan[] spans = spanned.getSpans(pos, end, RtfRawSpan.class);
+        for (RtfRawSpan span : spans) {
+            if (spanned.getSpanStart(span) <= pos && spanned.getSpanEnd(span) > pos) return span;
+        }
+        return null;
+    }
+
+    private URLSpan urlSpanAt(Spanned spanned, int pos) {
+        int end = Math.min(spanned.length(), pos + 1);
+        if (end <= pos) return null;
+        URLSpan[] spans = spanned.getSpans(pos, end, URLSpan.class);
+        for (URLSpan span : spans) {
+            if (spanned.getSpanStart(span) <= pos && spanned.getSpanEnd(span) > pos) return span;
+        }
+        return null;
+    }
+
+    private RtfTextStyle styleAt(Spanned spanned, int pos) {
+        RtfTextStyle style = new RtfTextStyle();
+        if (spanned == null || spanned.length() == 0) return style;
+        int end = Math.min(spanned.length(), pos + 1);
+        for (StyleSpan span : spanned.getSpans(pos, end, StyleSpan.class)) {
+            int s = span.getStyle();
+            if ((s & Typeface.BOLD) != 0) style.bold = true;
+            if ((s & Typeface.ITALIC) != 0) style.italic = true;
+        }
+        if (spanned.getSpans(pos, end, UnderlineSpan.class).length > 0) style.underline = true;
+        if (spanned.getSpans(pos, end, StrikethroughSpan.class).length > 0) style.strike = true;
+        ForegroundColorSpan[] fg = spanned.getSpans(pos, end, ForegroundColorSpan.class);
+        if (fg.length > 0) style.fgColor = colorToCss(fg[fg.length - 1].getForegroundColor());
+        BackgroundColorSpan[] bg = spanned.getSpans(pos, end, BackgroundColorSpan.class);
+        if (bg.length > 0) style.bgColor = colorToCss(bg[bg.length - 1].getBackgroundColor());
+        RtfTypefaceSpan[] fonts = spanned.getSpans(pos, end, RtfTypefaceSpan.class);
+        if (fonts.length > 0) style.fontFamily = fonts[fonts.length - 1].familyName;
+        AbsoluteSizeSpan[] sizes = spanned.getSpans(pos, end, AbsoluteSizeSpan.class);
+        if (sizes.length > 0) style.fontSizeHalfPoints = Math.max(1, sizes[sizes.length - 1].getSize()) * 2;
+        if (spanned.getSpans(pos, end, SuperscriptSpan.class).length > 0) style.vertical = "super";
+        if (spanned.getSpans(pos, end, SubscriptSpan.class).length > 0) style.vertical = "sub";
+        AlignmentSpan.Standard[] aligns = spanned.getSpans(pos, end, AlignmentSpan.Standard.class);
+        if (aligns.length > 0) {
+            Layout.Alignment a = aligns[aligns.length - 1].getAlignment();
+            if (a == Layout.Alignment.ALIGN_CENTER) style.align = "center";
+            else if (a == Layout.Alignment.ALIGN_OPPOSITE) style.align = "right";
+            else style.align = null;
+        }
+        LeadingMarginSpan.Standard[] margins = spanned.getSpans(pos, end, LeadingMarginSpan.Standard.class);
+        if (margins.length > 0) {
+            int rest = margins[margins.length - 1].getLeadingMargin(false);
+            int first = margins[margins.length - 1].getLeadingMargin(true);
+            style.leftIndentTwips = pxToTwips(rest);
+            style.firstIndentTwips = pxToTwips(first - rest);
+        }
+        return style;
+    }
+
+    private String emitRtfText(String text, RtfTextStyle style, Map<String, Integer> colors, Map<String, Integer> fonts) {
+        if (text == null || text.isEmpty()) return "";
+        String escaped = RtfUtils.rtfEscapeMultiline(text);
+        String prefix = rtfStylePrefix(style, colors, fonts);
+        if (prefix.isEmpty()) return escaped;
+        return "{" + prefix + " " + escaped + "}";
+    }
+
+    private String rtfStylePrefix(RtfTextStyle style, Map<String, Integer> colors, Map<String, Integer> fonts) {
+        if (style == null) return "";
+        StringBuilder out = new StringBuilder();
+        if (style.align != null) {
+            if ("center".equals(style.align)) out.append("\\qc");
+            else if ("right".equals(style.align)) out.append("\\qr");
+            else if ("justify".equals(style.align)) out.append("\\qj");
+            else out.append("\\ql");
+        }
+        if (style.bold) out.append("\\b");
+        if (style.italic) out.append("\\i");
+        if (style.underline) out.append("\\ul");
+        if (style.strike) out.append("\\strike");
+        if (style.fontFamily != null) {
+            Integer idx = fonts == null ? null : fonts.get(LegacyRichTextToolbar.normalizeFontFamily(style.fontFamily));
+            if (idx != null) out.append("\\f").append(idx);
+        }
+        if (style.fontSizeHalfPoints != null && style.fontSizeHalfPoints > 0) out.append("\\fs").append(style.fontSizeHalfPoints);
+        if (style.fgColor != null) {
+            Integer idx = colors == null ? null : colors.get(style.fgColor.toLowerCase(Locale.ROOT));
+            if (idx != null) out.append("\\cf").append(idx);
+        }
+        if (style.bgColor != null) {
+            Integer idx = colors == null ? null : colors.get(style.bgColor.toLowerCase(Locale.ROOT));
+            if (idx != null) out.append("\\highlight").append(idx);
+        }
+        if (style.leftIndentTwips > 0) out.append("\\li").append(style.leftIndentTwips);
+        if (style.firstIndentTwips != 0) out.append("\\fi").append(style.firstIndentTwips);
+        if ("super".equals(style.vertical)) out.append("\\super");
+        if ("sub".equals(style.vertical)) out.append("\\sub");
+        return out.toString();
+    }
+
+    private String rtfHyperlinkField(String url, String label, String stylePrefix) {
+        String safeUrl = (url == null ? "" : url).replace("\\", "\\\\").replace("\"", "\\\"");
+        String safeLabel = label == null || label.isEmpty() ? safeUrl : label;
+        String prefix = stylePrefix == null ? "" : stylePrefix;
+        String result = prefix.isEmpty() ? RtfUtils.rtfEscapeMultiline(safeLabel) : "{" + prefix + " " + RtfUtils.rtfEscapeMultiline(safeLabel) + "}";
+        return "{\\field{\\*\\fldinst HYPERLINK \"" + safeUrl + "\"}{\\fldrslt " + result + "}}";
+    }
+
+    private String cleanRtfFontName(String family) {
+        return LegacyRichTextToolbar.normalizeFontFamily(family).replace('\\', ' ').replace('{', ' ').replace('}', ' ').replace(';', ' ').trim();
+    }
+
+    private String colorToCss(int color) {
+        return String.format(Locale.ROOT, "#%06x", color & 0x00ffffff);
+    }
+
+    private int[] paragraphRange(String text, int start, int end) {
+        String value = text == null ? "" : text;
+        int len = value.length();
+        int s = Math.max(0, Math.min(start, len));
+        int e = Math.max(s, Math.min(end, len));
+        int ps = value.lastIndexOf('\n', Math.max(0, s - 1));
+        ps = ps < 0 ? 0 : ps + 1;
+        int pe = value.indexOf('\n', e);
+        if (pe < 0) pe = len;
+        else pe = pe + 1;
+        return new int[]{ps, pe};
+    }
+
+    private int twipsToPx(int twips) {
+        return Math.round((twips / 1440.0f) * getResources().getDisplayMetrics().xdpi);
+    }
+
+    private int pxToTwips(int px) {
+        float xdpi = getResources().getDisplayMetrics().xdpi;
+        if (xdpi <= 0) xdpi = 160f;
+        return Math.round((px / xdpi) * 1440.0f);
+    }
+
     private void selectNode(NoteNode node, boolean focusEditor) {
         if (node == null) return;
         saveCurrentEditorToNode();
@@ -1846,7 +2671,7 @@ public final class MainActivity extends Activity {
         loadingEditor = true;
         rootTitleView.setText(document.ensureRoot().title == null ? "start" : document.ensureRoot().title);
         titleEdit.setText(loaded.titleText);
-        editor.setText(loaded.editorPlainText);
+        editor.setText(rtfToEditorText(loaded.rawRtf));
         editor.setSelection(editor.getText().length());
         loadingEditor = false;
         editorDirty = false;
@@ -1864,15 +2689,17 @@ public final class MainActivity extends Activity {
 
     private void saveCurrentEditorToNode() {
         if (currentNode == null) return;
-        LegacyEditorNodeSync.SaveState saved = LegacyEditorNodeSync.applyToNode(
-                currentNode,
-                titleEdit == null ? currentNode.title : titleEdit.getText().toString(),
-                editor == null ? RtfUtils.rtfToPlainText(currentNode.rtf == null ? "" : currentNode.rtf) : editor.getText().toString(),
-                editorDirty,
-                titleDirty);
-        if (saved.changed) {
+        // LegacyEditorNodeSync.applyToNode bleibt das historische Plaintext-Modell; der native Android-Editor speichert hier zusätzlich Spans und Bilder als RTF.
+        String oldTitle = LegacyEditorNodeSync.normalizeTitle(currentNode.title);
+        String oldRtf = currentNode.rtf == null ? "" : currentNode.rtf;
+        String nextTitle = titleDirty ? LegacyEditorNodeSync.normalizeTitle(titleEdit == null ? currentNode.title : titleEdit.getText().toString()) : oldTitle;
+        String nextRtf = editorDirty ? editorContentToRtf() : oldRtf;
+        boolean changed = !oldTitle.equals(nextTitle) || !oldRtf.equals(nextRtf);
+        if (changed) {
+            currentNode.title = nextTitle;
+            currentNode.rtf = nextRtf;
             document.markChanged();
-            if (saved.reloadDesktopNote) status("Haftnotiz-Daten aktualisiert");
+            if (currentNode.desktopNote != null) status("Haftnotiz-Daten aktualisiert");
         }
         editorDirty = false;
         titleDirty = false;
@@ -1884,6 +2711,29 @@ public final class MainActivity extends Activity {
         treeAdapter.setRows(rows);
         treeAdapter.setSelected(currentNode);
         rootTitleView.setText(document.ensureRoot().title == null ? "start" : document.ensureRoot().title);
+    }
+
+    private void finishLoadedDocument(String message) {
+        currentNode = null;
+        rebuildTree();
+        selectNode(document.ensureRoot(), false);
+        updateTitle();
+        status((message == null ? "Geöffnet" : message) + " · " + treeExpansionSummary());
+    }
+
+    private String treeExpansionSummary() {
+        int[] counts = new int[]{0, 0};
+        countTreeExpansion(document == null ? null : document.ensureRoot(), counts);
+        return "ALX-Baumzustand: " + counts[0] + " offen, " + counts[1] + " zu";
+    }
+
+    private void countTreeExpansion(NoteNode node, int[] counts) {
+        if (node == null || counts == null) return;
+        if (!node.children.isEmpty()) {
+            if (node.expanded) counts[0]++;
+            else counts[1]++;
+        }
+        for (NoteNode child : node.children) countTreeExpansion(child, counts);
     }
 
     private void buildRows(NoteNode node, int depth, ArrayList<TreeListAdapter.FlatNode> rows) {
@@ -2085,7 +2935,7 @@ public final class MainActivity extends Activity {
         LegacyAppDataConfigPath.Paths paths = LegacyAppDataConfigPath.build("%APPDATA%", "Documents");
         LegacyConfigLifecycle.WindowData window = LegacyConfigLifecycle.onLoad(settings, 1920, 1080);
         LegacyClipboardFormatModel.Preferred clip = LegacyClipboardFormatModel.preferred(new LegacyClipboardFormatModel.Formats(internalClipboardNode != null, false, false, false, false));
-        String msg = "Titel: " + state.windowTitle("Notizen Android") +
+        String msg = "Titel: " + state.windowTitle(APP_DISPLAY_NAME) +
                 "\nGeändert: " + (state.changed ? "ja" : "nein") +
                 "\nSpeicherentscheidung: " + state.defaultSaveDecision +
                 "\nKann speichern: " + (state.canSave ? "ja" : "nein") +
@@ -2134,7 +2984,7 @@ public final class MainActivity extends Activity {
 
     private void resetAfterLegacyClose(LegacyCloseResetModel.ClosePlan plan) {
         if (plan == null || !plan.proceed) return;
-        LegacyCloseResetModel.ResetState reset = LegacyCloseResetModel.afterClose("1.0.96-java-native");
+        LegacyCloseResetModel.ResetState reset = LegacyCloseResetModel.afterClose(APP_VERSION_NAME);
         document = LegacyCloseResetModel.newUnnamedDocument();
         currentUri = null;
         currentRawFile = null;
@@ -2192,7 +3042,7 @@ public final class MainActivity extends Activity {
 
     private void showDiagnostics() {
         saveCurrentEditorToNode();
-        String msg = LegacyDiagnosticReport.build(document, currentNode, currentDocumentTitleState(), settings, "1.0.96-java-native");
+        String msg = LegacyDiagnosticReport.build(document, currentNode, currentDocumentTitleState(), settings, APP_VERSION_NAME);
         new AlertDialog.Builder(this).setTitle("Diagnose").setMessage(msg).setPositiveButton("OK", null).show();
     }
 
@@ -2205,7 +3055,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showRuntimeIdentity() {
-        String msg = LegacyRuntimeIdentity.summary("1.0.96-java-native")
+        String msg = LegacyRuntimeIdentity.summary(APP_VERSION_NAME)
                 + "\n\nZIP-Modus-Beispiele:"
                 + "\n" + LegacyPackagePermissionModel.describe("scripts/install_linux_launcher.sh", false)
                 + "\n" + LegacyPackagePermissionModel.describe("Notizen PyQt.desktop", false)
@@ -2393,7 +3243,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showInfo() {
-        String version = "1.0.96-java-native";
+        String version = APP_VERSION_NAME;
         String lang = settings == null ? "Deutsch" : settings.language;
         LegacyAboutHelp.AboutSpec about = LegacyAboutHelp.spec(lang, version);
         String msg = about.description + "\n\n" +
@@ -2566,10 +3416,7 @@ public final class MainActivity extends Activity {
             document.markSaved();
             editorDirty = false;
             titleDirty = false;
-            rebuildTree();
-            selectNode(document.ensureRoot(), false);
-            updateTitle();
-            status("Geöffnet: " + currentDisplayName);
+            finishLoadedDocument("Geöffnet: " + currentDisplayName);
         } catch (AlxException.PasswordRequired e) {
             byte[] copy;
             try { copy = readAll(uri); } catch (Exception readError) { error("Öffnen fehlgeschlagen", readError.getMessage()); return; }
@@ -2593,10 +3440,7 @@ public final class MainActivity extends Activity {
             document.markSaved();
             editorDirty = false;
             titleDirty = false;
-            rebuildTree();
-            selectNode(document.ensureRoot(), false);
-            updateTitle();
-            status("Geöffnet: " + currentDisplayName);
+            finishLoadedDocument("Geöffnet: " + currentDisplayName);
         } catch (Exception e) {
             error("Öffnen fehlgeschlagen", e.getMessage());
         }
@@ -2740,7 +3584,7 @@ public final class MainActivity extends Activity {
 
     private LegacyDocumentTitle.State currentDocumentTitleState() {
         return LegacyDocumentTitle.build(
-                "Notizen Android",
+                APP_DISPLAY_NAME,
                 currentDisplayName,
                 document != null && document.changed,
                 currentFtpTarget == null ? "" : currentFtpTarget.safeDisplayUrl(),

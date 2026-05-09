@@ -12,7 +12,7 @@ public final class LegacyRuntimeIdentity {
     public static final String APP_DESKTOP_ID = "notizen-py-qt";
     public static final String APP_DISPLAY_NAME = "Notizen PyQt";
     public static final String ANDROID_PACKAGE = "de.notizen.android";
-    public static final String ANDROID_DISPLAY_NAME = "Notizen Android";
+    public static final String ANDROID_DISPLAY_NAME = "Notizen Java Android Nativ";
     public static final String ANDROID_ACTIVITY = "de.notizen.android.MainActivity";
 
     private LegacyRuntimeIdentity() {}

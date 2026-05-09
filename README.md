@@ -1,4 +1,4 @@
-# Notizen Android Native Java
+# Notizen Java Android Nativ
 
 Native Android-/Java-Portierung aus den bereitgestellten Projekten **Notizen.NET** und **Notizen PyQt**.
 
@@ -23,7 +23,7 @@ In dieser Ausführungsumgebung sind kein Android SDK und kein Gradle installiert
 - Legacy-Farbpalette aus Notizen.NET inklusive der historischen `Random.Next(0,14)`-Reichweite.
 - Haftnotiz-Metadaten (`visible`, `x`, `y`, `width`, `height`, `opacity`, `argb`) anzeigen, ändern und entfernen.
 - Wecker-Metadaten und native Android-Weckerplanung mit Notification-Ausgabe. Wiederholungen: einmalig, täglich, wöchentlich, monatlich, jährlich; die alten `wecker.vb`-Checkboxnamen und Intervall-Einheiten liegen als Java-Mapping vor.
-- RTF wird als lesbarer Text angezeigt; unveränderte RTF-Rohdaten bleiben erhalten, solange der jeweilige Knoten nicht bearbeitet wird. Zusätzlich gibt es eine formatierte HTML-Vorschau mit Bildern, Hyperlinks, Objekt-Platzhaltern, Schriftarten, Farben, Hervorhebungen, Ausrichtung, Einzügen, Absatzabständen, Zeilenabständen, Hoch-/Tiefstellung, Super/Subscript, RTL/LTR, Zeichenabstand und weiteren RichTextBox-Formatierungen.
+- RTF wird im Editor nativ als Android-`Spannable` angezeigt: Textformatierungen, Schriftgrößen, Schriftarten, Farben, Hervorhebungen, Ausrichtung, Einzüge, Hyperlinks, Objekt-/Feldplatzhalter und Bilder aus `\pict`-Blöcken bleiben sichtbar bzw. erhalten. Zusätzlich gibt es eine HTML-Vorschau für weitere RichTextBox-Details.
 - HTML-Import in den aktuellen Knoten: HTML wird dependency-frei in RTF übertragen, inklusive Basis-Tags/CSS, Data-URI-Bildern, Hyperlinks, Listen-/Tabellen-Plaintext-Brücke und erhaltenen Notizen-Spezialfeldern.
 - TXT-/RTF-Import in die aktuelle Notiz, inklusive BOM-Erkennung, UTF-8/CP1252-Fallback und RTF-Erhalt bei echten `.rtf`-Quellen.
 - Suche in Baumtexten und optional Titeln; „ganze Wörter“ benutzt die historische Trennregel Space/CR/LF.
@@ -43,10 +43,10 @@ In dieser Ausführungsumgebung sind kein Android SDK und kein Gradle installiert
 - Legacy-Fensterstatus-Hilfen für minimierten Start, wiederherstellbare Geometrie und Schutz gegen unsichtbare/offscreen Desktop-Fensterdaten.
 - Legacy-Backup-Hilfen mit altem Backupordner-/Dateinamensschema, Timestamp-Parser und Pruning-Regeln.
 - Privacy-light ALX-Validierung nach PyQt-`legacy_validation.py`: strukturelle Zusammenfassung ohne Notiztexte, SHA-256-Baum-/Inhalts-Hashes und Load→Dump→Load-Roundtripcheck.
-- Bild-Einfügen aus Android-Dateiauswahl: PNG/JPEG/BMP werden als RTF-`pict` in den aktuellen Knoten eingebettet.
+- Bild-Einfügen aus Android-Dateiauswahl: PNG/JPEG/BMP werden als RTF-`pict` in den aktuellen Knoten eingebettet und sofort in der RTF-Box sichtbar angezeigt.
 - RTF-Content-Parts im reinen Java-Kern: formatierte Textsegmente, Hyperlink-Felder, generische Felder, Bilder und OLE-/Objektgruppen können getrennt ausgewertet werden.
 - Kombinierter RTF-Gesamtexport erhält jetzt auch Textformatierungen über eigene Font-/Farbtabellen, nicht nur Spezialgruppen.
-- Legacy-RTF-Auswahlformatierung für Android: markierter Plaintext kann als Bold/Italic/Underline/Strike/Ausrichtung/Schriftgröße/Schriftart in RTF gespeichert und in Vorschau/Export sichtbar gemacht werden.
+- Native RTF-Auswahlformatierung für Android: markierter Text kann über Toolbar oder Dialog direkt fett/kursiv/unterstrichen/durchgestrichen, größer/kleiner, mit Schriftart/Schriftgröße, Farben und Ausrichtung formatiert werden; die Änderungen werden wieder als RTF gespeichert.
 - Legacy-`ToolStrip_fontstyle` liegt als Java-Modell mit alten ObjectNames, Shortcuts, Icon-only-Beschreibungen und Fontsize-Grenzen vor.
 - Android-Drucken über WebView/PrintManager für aktuelle Notiz, aktuellen Teilbaum oder gesamten Baum.
 - Kompakte Desktop-Haftnotiz-HTML-Brücke: `\line` wird als `<br/>` statt Absatzlayout ausgegeben, passend für alte Sticky-Note-Inhalte.
@@ -84,7 +84,7 @@ Manuell in Termux ohne Gradle, wenn `aapt2`, `d8`, `apksigner`, `zipalign`, JDK 
 
 Mit Android Studio:
 
-1. Projektordner `NotizenAndroidNative` öffnen.
+1. Projektordner `NotizenJavaAndroidNativ` öffnen.
 2. SDK installieren lassen, falls Android Studio danach fragt.
 3. Build Variant `debug` wählen.
 4. `Build > Make Project` oder `Run` ausführen.
@@ -293,3 +293,24 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Buildfix: `MainActivity.showAutosaveTickModel()` nutzt wieder `LegacySettings.autosaveSeconds > 0` statt des nicht existierenden Felds `autosaveEnabled`.
 - Regressionstest gegen `settings.autosaveEnabled` ergänzt.
 - Version erhöht auf `versionCode 96` / `versionName 1.0.96-java-native`.
+
+## v97
+
+- Projektname und sichtbarer App-Name auf `Notizen Java Android Nativ` umgestellt.
+- Version erhöht auf `versionCode 97` / `versionName 1.0.97-java-android-nativ`.
+- RTF-Editor von reiner Plaintext-Anzeige auf native Android-`Spannable`-Darstellung erweitert: Fett/Kursiv/Unterstrichen/Durchgestrichen, Schriftgröße, Schriftart, Textfarbe, Hervorhebung, Ausrichtung und Einzüge werden im Editor sichtbar und wieder als RTF gespeichert.
+- RTF-Bilder werden aus vorhandenen `\pict`-Blöcken dekodiert, in der Editorbox angezeigt und beim Speichern erhalten. Neu eingefügte Bilder erscheinen sofort an der Cursorposition.
+- Obere Toolbar ergänzt um direkte Formatbuttons `Fett`, `Kursiv`, `Größer`, `Kleiner`, `Schriftart` und `Größe`, damit die wichtigsten RTF-Aktionen ohne Unterdialog erreichbar sind.
+- Tablet-Drehung verliert Baum und RTF-Inhalt nicht mehr: Dokument, aktueller Knoten, Auswahl, Dateiziel, Settings und Status werden über `onRetainNonConfigurationInstance()` gehalten und nach dem Neuaufbau der Oberfläche wiederhergestellt.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`.
+## v98
+
+- Version erhöht auf `versionCode 98` / `versionName 1.0.98-java-android-nativ`.
+- ALX-Baumzustand wird beim Laden jetzt sichtbar übernommen: offene und geschlossene Knoten aus `isexpanded` sowie Aliasformen wie `isExpanded`, `IsExpanded` und `expanded` werden gelesen und beim Speichern wieder als kanonisches `isexpanded` geschrieben.
+- Nach dem Öffnen zeigt die Statuszeile eine kurze Baumzustands-Zusammenfassung, damit sofort klar ist, dass der ALX-Auf-/Zuklappzustand übernommen wurde.
+- Obere Toolbar neu geordnet in drei horizontale Listen: `Datei`, `Baum` und `Text`. Alle Toolbar-Schaltflächen sind quadratisch und nutzen kompaktere Icon-/Glyph-Darstellung mit Tooltip/Accessibility-Text.
+- Textformat-Buttons `Fett`, `Kursiv`, `Größer`, `Kleiner`, `Schriftart` und `Größe` haben eigene Icon-Mappings bekommen.
+- Baum- und Editorbereich in breiter Ansicht haben einen ziehbaren Trenner. Die Baumbreite kann mit dem Finger stark verkleinert oder vergrößert werden und wird in der Android-Config gespeichert.
+- Baumdarstellung optisch geglättet: hellere Zeilenflächen, abgerundete Auswahl und klarere Auf-/Zu-Markierungen.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
+

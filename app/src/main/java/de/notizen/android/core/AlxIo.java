@@ -36,7 +36,7 @@ public final class AlxIo {
     public static final byte[] GZIP_MAGIC = new byte[]{0x1f, (byte) 0x8b};
     public static final String BLANK_PASSWORD_24 = "                        ";
     private static final Set<String> NOTE_KNOWN_ATTRS = new LinkedHashSet<>(Arrays.asList(
-            "name", "title", "isexpanded", "bgcolor", "fgcolor", "visible", "x", "y", "width", "height", "opacity", "argb"
+            "name", "title", "isexpanded", "isExpanded", "IsExpanded", "expanded", "Expanded", "bgcolor", "fgcolor", "visible", "x", "y", "width", "height", "opacity", "argb"
     ));
     private static final Set<String> DESKTOP_ATTRS = new LinkedHashSet<>(Arrays.asList(
             "visible", "x", "y", "width", "height", "opacity", "argb"
@@ -255,7 +255,7 @@ public final class AlxIo {
     private static NoteNode parseNotiz(Element element) throws Exception {
         String title = nonEmpty(element.getAttribute("name"), nonEmpty(element.getAttribute("title"), "..."));
         NoteNode node = new NoteNode(title, directLeadingText(element));
-        node.expanded = boolAttr(element.getAttribute("isexpanded"), true);
+        node.expanded = boolAttr(attrAny(element, "isexpanded", "isExpanded", "IsExpanded", "expanded", "Expanded"), true);
         node.bgArgb = intAttr(element.getAttribute("bgcolor"), 0);
         node.fgArgb = intAttr(element.getAttribute("fgcolor"), 0);
         node.desktopNote = desktopStateFromElement(element);
@@ -276,6 +276,14 @@ public final class AlxIo {
             }
         }
         return node;
+    }
+
+    private static String attrAny(Element element, String... names) {
+        if (element == null || names == null) return "";
+        for (String name : names) {
+            if (name != null && element.hasAttribute(name)) return element.getAttribute(name);
+        }
+        return "";
     }
 
     private static String nonEmpty(String value, String fallback) {
@@ -310,6 +318,7 @@ public final class AlxIo {
 
     private static NoteNode parseLegacyNode(Element element) {
         NoteNode node = new NoteNode(nonEmpty(element.getAttribute("title"), nonEmpty(element.getAttribute("name"), "...")), "");
+        node.expanded = boolAttr(attrAny(element, "isexpanded", "isExpanded", "IsExpanded", "expanded", "Expanded"), true);
         NodeList children = element.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {
             Node n = children.item(i);

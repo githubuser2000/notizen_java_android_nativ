@@ -55,6 +55,7 @@ public final class LegacySettings {
     public int windowWidth = 1000;
     public int windowHeight = 700;
     public String windowState = "Normal";
+    public int androidTreePaneWidthDp = 280;
     public long feedbackDayTicks = 0L;
     public int feedbackCount = 0;
     public final Map<String, int[]> toolstripPositions = defaultToolstripPositions();
@@ -89,6 +90,7 @@ public final class LegacySettings {
         s.windowWidth = windowWidth;
         s.windowHeight = windowHeight;
         s.windowState = windowState;
+        s.androidTreePaneWidthDp = androidTreePaneWidthDp;
         s.feedbackDayTicks = feedbackDayTicks;
         s.feedbackCount = feedbackCount;
         s.toolstripPositions.clear();
@@ -112,6 +114,11 @@ public final class LegacySettings {
         }
         if (seconds <= 0) return 0;
         return Math.max(5, seconds);
+    }
+
+    public static int normalizeAndroidTreePaneWidthDp(int value) {
+        if (value <= 0) return 280;
+        return Math.max(56, Math.min(1200, value));
     }
 
     public static String normalizeWindowState(String value) {
@@ -296,6 +303,10 @@ public final class LegacySettings {
             windowHeight = asInt(main.getAttribute("height"), windowHeight);
             windowState = normalizeWindowState(main.getAttribute("windowstate"));
         }
+        Element androidUi = child(root, "android-ui");
+        if (androidUi != null) {
+            androidTreePaneWidthDp = normalizeAndroidTreePaneWidthDp(asInt(androidUi.getAttribute("treepane-width-dp"), androidTreePaneWidthDp));
+        }
     }
 
     public byte[] toXmlBytes() throws Exception {
@@ -316,6 +327,7 @@ public final class LegacySettings {
         append(doc, root, "minimized-show-in", attrsFor("minimized-show-in", map("taskbar", yesNo(showInTaskbarWhenMinimized))));
         append(doc, root, "tray", attrsFor("tray", map("gnome-safe-start", yesNo(gnomeSafeTrayStart))));
         append(doc, root, "desknotes", attrsFor("desknotes", map("show_desknote_borders", yesNo(showDesknoteBorders))));
+        append(doc, root, "android-ui", attrsFor("android-ui", map("treepane-width-dp", String.valueOf(normalizeAndroidTreePaneWidthDp(androidTreePaneWidthDp)))));
         Element stripes = append(doc, root, "tool-stripes", attrsFor("tool-stripes", new LinkedHashMap<String, String>()));
         for (String name : new String[]{"haupt", "elements", "font", "cutpastecopy"}) {
             int[] pos = toolstripPositions.get(name);
@@ -399,7 +411,7 @@ public final class LegacySettings {
     private static Set<String> knownTopLevelTags() {
         return new LinkedHashSet<>(Arrays.asList(
                 "scrolls", "language", "open", "files", "ftp", "saftycopies", "autosave", "x", "tool-stripes",
-                "autorun", "desknotes", "minimized-show-in", "tray", "main-form"
+                "autorun", "desknotes", "minimized-show-in", "tray", "main-form", "android-ui"
         ));
     }
 
@@ -424,6 +436,7 @@ public final class LegacySettings {
         if ("minimized-show-in".equals(path)) return new LinkedHashSet<>(Arrays.asList("taskbar"));
         if ("tray".equals(path)) return new LinkedHashSet<>(Arrays.asList("gnome-safe-start", "gnome_safe_start"));
         if ("main-form".equals(path)) return new LinkedHashSet<>(Arrays.asList("x", "y", "width", "height", "windowstate"));
+        if ("android-ui".equals(path)) return new LinkedHashSet<>(Arrays.asList("treepane-width-dp"));
         if ("open/once-opened".equals(path)) return new LinkedHashSet<>(Arrays.asList("file", "timestamp"));
         if (path.startsWith("tool-stripes/")) return new LinkedHashSet<>(Arrays.asList("x", "y"));
         return new LinkedHashSet<>();

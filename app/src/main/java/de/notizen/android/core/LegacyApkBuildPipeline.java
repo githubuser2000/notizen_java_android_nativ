@@ -25,7 +25,7 @@ public final class LegacyApkBuildPipeline {
 
     private LegacyApkBuildPipeline() {}
 
-    public static Params defaultParams() { return new Params(34, 34, 23, "de.notizen.android", 96, "1.0.96-java-native"); }
+    public static Params defaultParams() { return new Params(34, 34, 23, "de.notizen.android", 98, "1.0.98-java-android-nativ"); }
 
     public static List<String> steps(Params p) {
         Params x = p == null ? defaultParams() : p;
@@ -49,7 +49,7 @@ public final class LegacyApkBuildPipeline {
         b.append("minSdk: ").append(x.minSdk).append('\n');
         b.append("version: ").append(x.versionCode).append(" / ").append(x.versionName).append('\n');
         for (String step : steps(x)) b.append("- ").append(step).append('\n');
-        b.append("Output: build/termux-apk/out/NotizenAndroidNative-v").append(x.versionCode).append("-debug.apk");
+        b.append("Output: build/termux-apk/out/NotizenJavaAndroidNativ-v").append(x.versionCode).append("-debug.apk");
         return b.toString();
     }
 }

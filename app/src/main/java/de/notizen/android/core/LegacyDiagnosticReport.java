@@ -11,9 +11,9 @@ public final class LegacyDiagnosticReport {
         NoteNode current = currentNode == null ? root : currentNode;
         LegacyRichTextBoxSemantics.Metrics metrics = LegacyRichTextBoxSemantics.inspectRtf(current.rtf == null ? "" : current.rtf);
         LegacySettings cfg = settings == null ? new LegacySettings() : settings;
-        LegacyDocumentTitle.State state = title == null ? LegacyDocumentTitle.build("Notizen Android", doc.displayName, doc.changed, "", "", "") : title;
+        LegacyDocumentTitle.State state = title == null ? LegacyDocumentTitle.build("Notizen Java Android Nativ", doc.displayName, doc.changed, "", "", "") : title;
         StringBuilder out = new StringBuilder();
-        out.append("Notizen Android Diagnose\n");
+        out.append("Notizen Java Android Nativ Diagnose\n");
         out.append("Version: ").append(clean(versionName)).append('\n');
         out.append("Paket: de.notizen.android\n");
         out.append("Dokument: ").append(state.displayName).append('\n');

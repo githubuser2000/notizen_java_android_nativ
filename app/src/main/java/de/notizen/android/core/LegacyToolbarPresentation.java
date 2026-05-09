@@ -73,7 +73,13 @@ public final class LegacyToolbarPresentation {
         put(m, "Vor Ziel", "tree_move_before", "Knoten vor Ziel verschieben", "⇥", "", "elements");
         put(m, "Datum", "insert_date", "Datum einfügen", "📅", "Ctrl+D", "font");
         put(m, "Punkt", "insert_bullet", "Aufzählungspunkt einfügen", "•", "", "font");
-        put(m, "RTF Format", "rtf_format", "RTF-Formatierung anwenden", "𝐁", "", "font");
+        put(m, "Fett", "format_bold", "Fett formatieren", "𝐁", "Ctrl+B", "font");
+        put(m, "Kursiv", "format_italic", "Kursiv formatieren", "𝐼", "Ctrl+I", "font");
+        put(m, "Größer", "font_bigger", "Schrift größer", "A+", "", "font");
+        put(m, "Kleiner", "font_smaller", "Schrift kleiner", "A−", "", "font");
+        put(m, "Schriftart", "font_family", "Schriftart wählen", "F", "", "font");
+        put(m, "Größe", "font_size", "Schriftgröße wählen", "12", "", "font");
+        put(m, "RTF Format", "rtf_format", "RTF-Formatierung anwenden", "✎", "", "font");
         put(m, "Scroll", "cycle_scrollbars", "Scrollleisten wechseln", "↕", "", "font");
         put(m, "Bild", "insert_image", "Bild einfügen", "▧", "", "font");
         put(m, "Vorschau", "preview", "HTML-/RTF-Vorschau", "👁", "", "haupt");

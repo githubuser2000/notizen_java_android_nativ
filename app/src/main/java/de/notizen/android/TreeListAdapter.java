@@ -3,6 +3,7 @@ package de.notizen.android;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
@@ -53,19 +54,30 @@ public final class TreeListAdapter extends BaseAdapter {
         view.setTextSize(16f);
         view.setGravity(android.view.Gravity.CENTER_VERTICAL);
         view.setSingleLine(false);
-        view.setMinHeight(dp(42));
+        view.setMinHeight(dp(44));
         view.setTypeface(node.parent == null ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-        view.setPadding(dp(10 + row.depth * 22), dp(6), dp(8), dp(6));
+        view.setPadding(dp(12 + row.depth * 22), dp(7), dp(10), dp(7));
         if (node == selected) {
-            view.setBackgroundColor(Color.rgb(220, 235, 255));
+            view.setBackground(rowBackground(Color.rgb(218, 233, 255), Color.rgb(130, 170, 230)));
         } else if (node.bgArgb != 0) {
-            view.setBackgroundColor(0xff000000 | (node.bgArgb & 0x00ffffff));
+            view.setBackground(rowBackground(0xff000000 | (node.bgArgb & 0x00ffffff), Color.rgb(225, 228, 234)));
+        } else if ((position & 1) == 0) {
+            view.setBackground(rowBackground(Color.rgb(250, 251, 253), Color.TRANSPARENT));
         } else {
-            view.setBackgroundColor(Color.TRANSPARENT);
+            view.setBackground(rowBackground(Color.WHITE, Color.TRANSPARENT));
         }
         if (node.fgArgb != 0) view.setTextColor(0xff000000 | (node.fgArgb & 0x00ffffff));
-        else view.setTextColor(Color.rgb(30, 30, 30));
+        else view.setTextColor(node == selected ? Color.rgb(20, 38, 64) : Color.rgb(32, 38, 46));
         return view;
+    }
+
+    private GradientDrawable rowBackground(int fillColor, int strokeColor) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.RECTANGLE);
+        bg.setColor(fillColor);
+        bg.setCornerRadius(dp(7));
+        if (strokeColor != Color.TRANSPARENT) bg.setStroke(dp(1), strokeColor);
+        return bg;
     }
 
     private int dp(int value) {

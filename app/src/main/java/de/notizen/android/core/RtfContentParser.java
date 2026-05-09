@@ -131,8 +131,10 @@ final class RtfContentParser {
             String raw = special.pictGroup == null ? special.raw : special.pictGroup;
             RtfUtils.RtfImage image = parsePictGroup(raw);
             String mime = image == null ? "" : image.mimeType;
-            int bytes = image == null ? 0 : image.data.length;
-            appendVisible(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, new RtfImagePart(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, styleNow(), mime, bytes));
+            byte[] data = image == null ? new byte[0] : image.data;
+            int widthTwips = image == null ? 0 : image.widthTwips;
+            int heightTwips = image == null ? 0 : image.heightTwips;
+            appendVisible(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, new RtfImagePart(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, styleNow(), mime, data, widthTwips, heightTwips));
         }
     }
 

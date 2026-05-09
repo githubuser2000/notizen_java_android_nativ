@@ -12,7 +12,7 @@ Die PyQt-Version enthielt den weit fortgeschrittenen Fachkern aus der .NET-Porti
 ## Android-Projekt
 
 ```text
-NotizenAndroidNative/
+NotizenJavaAndroidNativ/
   app/src/main/java/de/notizen/android/MainActivity.java
   app/src/main/java/de/notizen/android/TreeListAdapter.java
   app/src/main/java/de/notizen/android/AndroidBackupStore.java
@@ -297,3 +297,24 @@ Neu hinzugekommen sind `LegacyFontSetModel`, `LegacyWindowMoveResizeModel` und `
 - Buildfix: `MainActivity.showAutosaveTickModel()` nutzt wieder `LegacySettings.autosaveSeconds > 0` statt des nicht existierenden Felds `autosaveEnabled`.
 - Regressionstest gegen `settings.autosaveEnabled` ergänzt.
 - Version erhöht auf `versionCode 96` / `versionName 1.0.96-java-native`.
+
+## v97
+
+- Projektname und sichtbarer App-Name auf `Notizen Java Android Nativ` umgestellt.
+- Version erhöht auf `versionCode 97` / `versionName 1.0.97-java-android-nativ`.
+- RTF-Editor von reiner Plaintext-Anzeige auf native Android-`Spannable`-Darstellung erweitert: Fett/Kursiv/Unterstrichen/Durchgestrichen, Schriftgröße, Schriftart, Textfarbe, Hervorhebung, Ausrichtung und Einzüge werden im Editor sichtbar und wieder als RTF gespeichert.
+- RTF-Bilder werden aus vorhandenen `\pict`-Blöcken dekodiert, in der Editorbox angezeigt und beim Speichern erhalten. Neu eingefügte Bilder erscheinen sofort an der Cursorposition.
+- Obere Toolbar ergänzt um direkte Formatbuttons `Fett`, `Kursiv`, `Größer`, `Kleiner`, `Schriftart` und `Größe`, damit die wichtigsten RTF-Aktionen ohne Unterdialog erreichbar sind.
+- Tablet-Drehung verliert Baum und RTF-Inhalt nicht mehr: Dokument, aktueller Knoten, Auswahl, Dateiziel, Settings und Status werden über `onRetainNonConfigurationInstance()` gehalten und nach dem Neuaufbau der Oberfläche wiederhergestellt.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`.
+## v98
+
+- Version erhöht auf `versionCode 98` / `versionName 1.0.98-java-android-nativ`.
+- ALX-Baumzustand wird beim Laden jetzt sichtbar übernommen: offene und geschlossene Knoten aus `isexpanded` sowie Aliasformen wie `isExpanded`, `IsExpanded` und `expanded` werden gelesen und beim Speichern wieder als kanonisches `isexpanded` geschrieben.
+- Nach dem Öffnen zeigt die Statuszeile eine kurze Baumzustands-Zusammenfassung, damit sofort klar ist, dass der ALX-Auf-/Zuklappzustand übernommen wurde.
+- Obere Toolbar neu geordnet in drei horizontale Listen: `Datei`, `Baum` und `Text`. Alle Toolbar-Schaltflächen sind quadratisch und nutzen kompaktere Icon-/Glyph-Darstellung mit Tooltip/Accessibility-Text.
+- Textformat-Buttons `Fett`, `Kursiv`, `Größer`, `Kleiner`, `Schriftart` und `Größe` haben eigene Icon-Mappings bekommen.
+- Baum- und Editorbereich in breiter Ansicht haben einen ziehbaren Trenner. Die Baumbreite kann mit dem Finger stark verkleinert oder vergrößert werden und wird in der Android-Config gespeichert.
+- Baumdarstellung optisch geglättet: hellere Zeilenflächen, abgerundete Auswahl und klarere Auf-/Zu-Markierungen.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
+
