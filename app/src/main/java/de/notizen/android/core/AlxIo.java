@@ -42,6 +42,16 @@ public final class AlxIo {
             "visible", "x", "y", "width", "height", "opacity", "argb"
     ));
 
+    private static final int MAX_UNCOMPRESSED_ALX_BYTES = 96 * 1024 * 1024;
+
+    private static final class TreeBudget {
+        int nodes;
+        void visit(int depth) {
+            LegacyCrashHardening.checkTreeDepth(depth);
+            LegacyCrashHardening.checkTreeNodeCount(++nodes);
+        }
+    }
+
     private AlxIo() {}
 
     public static String normalizePassword(String password) {
@@ -78,12 +88,13 @@ public final class AlxIo {
             Element root = xml.getDocumentElement();
             NoteDocument document = new NoteDocument();
             String tag = root.getTagName();
+            TreeBudget budget = new TreeBudget();
             if ("notizen-alx2".equals(tag)) {
                 Element first = captureAlx2RootPassthrough(root, document);
-                if (first != null) document.root = parseNotiz(first);
+                if (first != null) document.root = parseNotiz(first, budget, 1);
             } else if ("notes_doc".equals(tag)) {
                 Element first = firstChildElement(root, "node", "leaf");
-                if (first != null) document.root = parseLegacyNode(first);
+                if (first != null) document.root = parseLegacyNode(first, budget, 1);
             } else {
                 throw new AlxException("Nicht unterstütztes Notizen-XML-Wurzelelement: " + tag);
             }
@@ -157,12 +168,20 @@ public final class AlxIo {
 
     private static byte[] gunzip(byte[] input) throws IOException {
         GZIPInputStream gz = new GZIPInputStream(new ByteArrayInputStream(input));
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = gz.read(buf)) != -1) out.write(buf, 0, n);
-        gz.close();
-        return out.toByteArray();
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            int total = 0;
+            while ((n = gz.read(buf)) != -1) {
+                if (total > MAX_UNCOMPRESSED_ALX_BYTES - n) throw new IOException("ALX-Datei ist nach dem Entpacken zu groß.");
+                out.write(buf, 0, n);
+                total += n;
+            }
+            return out.toByteArray();
+        } finally {
+            try { gz.close(); } catch (IOException ignored) {}
+        }
     }
 
     private static byte[][] passwordKeys(String password) {
@@ -252,7 +271,8 @@ public final class AlxIo {
         return firstNote;
     }
 
-    private static NoteNode parseNotiz(Element element) throws Exception {
+    private static NoteNode parseNotiz(Element element, TreeBudget budget, int depth) throws Exception {
+        if (budget != null) budget.visit(depth);
         String title = nonEmpty(element.getAttribute("name"), nonEmpty(element.getAttribute("title"), "..."));
         NoteNode node = new NoteNode(title, directLeadingText(element));
         node.expanded = boolAttr(attrAny(element, "isexpanded", "isExpanded", "IsExpanded", "expanded", "Expanded"), true);
@@ -271,7 +291,7 @@ public final class AlxIo {
             Node n = children.item(i);
             if (n instanceof Element) {
                 Element child = (Element)n;
-                if ("Notiz".equals(child.getTagName())) node.addChild(parseNotiz(child));
+                if ("Notiz".equals(child.getTagName())) node.addChild(parseNotiz(child, budget, depth + 1));
                 else node.extraChildXml.add(nodeToString(child));
             }
         }
@@ -316,7 +336,8 @@ public final class AlxIo {
         return d;
     }
 
-    private static NoteNode parseLegacyNode(Element element) {
+    private static NoteNode parseLegacyNode(Element element, TreeBudget budget, int depth) {
+        if (budget != null) budget.visit(depth);
         NoteNode node = new NoteNode(nonEmpty(element.getAttribute("title"), nonEmpty(element.getAttribute("name"), "...")), "");
         node.expanded = boolAttr(attrAny(element, "isexpanded", "isExpanded", "IsExpanded", "expanded", "Expanded"), true);
         NodeList children = element.getChildNodes();
@@ -326,7 +347,7 @@ public final class AlxIo {
             Element child = (Element)n;
             String tag = child.getTagName();
             if ("leaf_text".equals(tag)) node.rtf = parseLegacyLeafText(child);
-            else if ("node".equals(tag) || "leaf".equals(tag)) node.addChild(parseLegacyNode(child));
+            else if ("node".equals(tag) || "leaf".equals(tag)) node.addChild(parseLegacyNode(child, budget, depth + 1));
         }
         return node;
     }
@@ -371,7 +392,7 @@ public final class AlxIo {
                 for (java.util.Map.Entry<String, String> attr : document.rootAttrs.entrySet()) root.setAttribute(attr.getKey(), attr.getValue() == null ? "" : attr.getValue());
             }
             xml.appendChild(root);
-            root.appendChild(elementFromNote(xml, document == null ? null : document.ensureRoot()));
+            root.appendChild(elementFromNote(xml, document == null ? null : document.ensureRoot(), new TreeBudget(), 1));
             if (document != null) for (String fragment : document.extraRootXml) appendFragment(xml, root, fragment);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             Transformer t = TransformerFactory.newInstance().newTransformer();
@@ -385,8 +406,9 @@ public final class AlxIo {
         }
     }
 
-    private static Element elementFromNote(Document xml, NoteNode node) {
+    private static Element elementFromNote(Document xml, NoteNode node, TreeBudget budget, int depth) {
         if (node == null) node = new NoteNode("start", "");
+        if (budget != null) budget.visit(depth);
         Element element = xml.createElement("Notiz");
         for (java.util.Map.Entry<String, String> attr : node.extraAttrs.entrySet()) element.setAttribute(attr.getKey(), attr.getValue());
         element.setAttribute("name", node.title == null ? "..." : node.title);
@@ -405,7 +427,7 @@ public final class AlxIo {
         }
         if (node.rtf != null && !node.rtf.isEmpty()) element.appendChild(xml.createTextNode(node.rtf));
         for (String fragment : node.extraChildXml) appendFragment(xml, element, fragment);
-        for (NoteNode child : node.children) element.appendChild(elementFromNote(xml, child));
+        for (NoteNode child : node.children) element.appendChild(elementFromNote(xml, child, budget, depth + 1));
         return element;
     }
 

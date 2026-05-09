@@ -140,7 +140,10 @@ public final class RtfUtils {
     }
 
     public static int countImages(String rtf) {
-        return extractImages(rtf).size();
+        // Crash-Schutz: Statistik/Validierung darf eingebettete Bilder nur zählen,
+        // nicht dekodieren. Große RTF-\pict-Gruppen können mehrere Kopien im
+        // Speicher erzeugen, wenn sie über extractImages() gelesen werden.
+        return countImageGroups(rtf);
     }
 
     /** Count embedded RTF picture groups without decoding their hex payload. */

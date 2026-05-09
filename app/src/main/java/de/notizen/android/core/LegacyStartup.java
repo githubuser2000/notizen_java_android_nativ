@@ -1,5 +1,6 @@
 package de.notizen.android.core;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -179,16 +180,20 @@ public final class LegacyStartup {
     }
 
     private static String readUtf8(File file) throws IOException {
+        final int maxBytes = 1024 * 1024;
+        if (file != null && file.length() > maxBytes) throw new IOException("Autostart-Datei ist zu groß.");
         FileInputStream in = new FileInputStream(file);
         try {
-            byte[] data = new byte[(int) Math.min(Integer.MAX_VALUE, file.length())];
-            int pos = 0;
-            while (pos < data.length) {
-                int n = in.read(data, pos, data.length - pos);
-                if (n < 0) break;
-                pos += n;
+            ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.max(128, Math.min(maxBytes, file.length())));
+            byte[] buf = new byte[4096];
+            int n;
+            int total = 0;
+            while ((n = in.read(buf)) != -1) {
+                if (total > maxBytes - n) throw new IOException("Autostart-Datei ist zu groß.");
+                out.write(buf, 0, n);
+                total += n;
             }
-            return new String(data, 0, pos, StandardCharsets.UTF_8);
+            return new String(out.toByteArray(), StandardCharsets.UTF_8);
         } finally {
             in.close();
         }

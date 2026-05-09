@@ -1,5 +1,6 @@
 package de.notizen.android.core;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -15,15 +16,22 @@ public final class NoteTreeOps {
 
     public static List<NoteNode> legacyVisibleWalk(NoteNode root) {
         ArrayList<NoteNode> out = new ArrayList<>();
-        visibleInto(root, out);
-        return out;
-    }
-
-    private static void visibleInto(NoteNode node, List<NoteNode> out) {
-        out.add(node);
-        if (node.expanded) {
-            for (NoteNode child : node.children) visibleInto(child, out);
+        if (root == null) return out;
+        ArrayDeque<NoteNode> stack = new ArrayDeque<>();
+        stack.push(root);
+        int count = 0;
+        while (!stack.isEmpty()) {
+            NoteNode node = stack.pop();
+            out.add(node);
+            LegacyCrashHardening.checkTreeNodeCount(++count);
+            if (node.expanded) {
+                for (int i = node.children.size() - 1; i >= 0; i--) {
+                    NoteNode child = node.children.get(i);
+                    if (child != null) stack.push(child);
+                }
+            }
         }
+        return out;
     }
 
     public static NoteNode legacyPreviousVisibleNode(NoteNode selected) {

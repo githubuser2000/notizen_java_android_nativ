@@ -24,6 +24,7 @@ import java.util.regex.Pattern;
 final class RtfHtmlConverter {
     private static final Charset CP1252 = Charset.forName("windows-1252");
     private static final String SOFT_LINE_BREAK = "\u2028";
+    private static final int MAX_HTML_IMAGE_BYTES = 1024 * 1024;
     private static final Pattern HYPERLINK_FIELD = Pattern.compile("HYPERLINK\\s+(?:\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"|([^\\\\{}\\s]+))", Pattern.CASE_INSENSITIVE);
     private static final Pattern TAG_RE = Pattern.compile("(?is)<(/?)([a-zA-Z][a-zA-Z0-9:_-]*)([^>]*)>|([^<]+)");
     private static final Pattern ATTR_RE = Pattern.compile("([a-zA-Z_:][-a-zA-Z0-9_:.]*)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'>]+))");
@@ -318,8 +319,18 @@ final class RtfHtmlConverter {
 
         private void appendSpecial(SpecialGroup special) {
             if (special.kind == SpecialKind.PICT) {
-                RtfUtils.RtfImage image = parsePictGroup(special.pictGroup == null ? special.raw : special.pictGroup);
-                appendSpecialHtml(image == null ? RtfUtils.escapeXml(RtfUtils.LEGACY_IMAGE_PLACEHOLDER) : imageToHtml(image));
+                String raw = special.pictGroup == null ? special.raw : special.pictGroup;
+                int estimatedBytes = estimatePictPayloadBytes(raw, MAX_HTML_IMAGE_BYTES + 1);
+                if (estimatedBytes > MAX_HTML_IMAGE_BYTES) {
+                    appendSpecialHtml(largeImagePlaceholderHtml(estimatedBytes));
+                    return;
+                }
+                try {
+                    RtfUtils.RtfImage image = parsePictGroup(raw);
+                    appendSpecialHtml(image == null || image.data == null || image.data.length == 0 ? RtfUtils.escapeXml(RtfUtils.LEGACY_IMAGE_PLACEHOLDER) : imageToHtml(image));
+                } catch (OutOfMemoryError | RuntimeException ex) {
+                    appendSpecialHtml(largeImagePlaceholderHtml(estimatedBytes));
+                }
             } else if (special.kind == SpecialKind.FIELD) {
                 appendSpecialHtml(fieldToHtml(special.raw));
             } else if (special.kind == SpecialKind.OBJECT) {
@@ -1175,6 +1186,51 @@ final class RtfHtmlConverter {
     }
 
     private static int clamp255(int v) { return Math.max(0, Math.min(255, v)); }
+
+
+    private static int estimatePictPayloadBytes(String group, int stopAboveBytes) {
+        if (group == null || group.isEmpty()) return 0;
+        int hexDigits = 0;
+        int cap = Math.max(2, stopAboveBytes) * 2 + 2;
+        for (int i = 0; i < group.length(); i++) {
+            char c = group.charAt(i);
+            if (c == '\\') {
+                i++;
+                if (i >= group.length()) break;
+                char control = group.charAt(i);
+                if (control == '\'') {
+                    i += 2;
+                    continue;
+                }
+                if (Character.isLetter(control)) {
+                    while (i < group.length() && Character.isLetter(group.charAt(i))) i++;
+                    if (i < group.length() && (group.charAt(i) == '-' || group.charAt(i) == '+')) i++;
+                    while (i < group.length() && Character.isDigit(group.charAt(i))) i++;
+                    if (i < group.length() && group.charAt(i) == ' ') {
+                        // delimiter consumed by for-loop increment
+                    } else {
+                        i--;
+                    }
+                    continue;
+                }
+                continue;
+            }
+            if (isHexDigit(c)) {
+                hexDigits++;
+                if (hexDigits > cap) return stopAboveBytes + 1;
+            }
+        }
+        return hexDigits / 2;
+    }
+
+    private static boolean isHexDigit(char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    }
+
+    private static String largeImagePlaceholderHtml(int estimatedBytes) {
+        String suffix = estimatedBytes > 0 ? " (" + Math.max(1, estimatedBytes / 1024) + " KB)" : "";
+        return "<span class=\"notizen-image-placeholder\">" + RtfUtils.escapeXml(RtfUtils.LEGACY_IMAGE_PLACEHOLDER + " zu groß" + suffix) + "</span>";
+    }
 
     private static RtfUtils.RtfImage parsePictGroup(String group) {
         if (group == null || group.isEmpty()) return null;

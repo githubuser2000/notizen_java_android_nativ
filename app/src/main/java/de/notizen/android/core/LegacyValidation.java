@@ -103,6 +103,9 @@ public final class LegacyValidation {
     }
 
     public static LegacyAlxSummary summarizeAlxFile(File file, String password) throws Exception {
+        if (file != null && file.length() > LegacyCrashHardening.MAX_VALIDATION_FILE_BYTES) {
+            throw new IllegalStateException("Datei ist zu groß für sichere Android-Validierung (" + (file.length() / (1024 * 1024)) + " MB).");
+        }
         return summarizeAlxBytes(Files.readAllBytes(file.toPath()), password);
     }
 
@@ -123,6 +126,8 @@ public final class LegacyValidation {
     }
 
     private static void visit(NoteNode node, int depth, List<Integer> indexes, MessageDigest shape, MessageDigest content, Counter c) {
+        LegacyCrashHardening.checkTreeDepth(depth + 1);
+        LegacyCrashHardening.checkTreeNodeCount(c.nodeCount + 1);
         c.nodeCount++;
         c.maxDepth = Math.max(c.maxDepth, depth);
         if (node.desktopNote != null) {
@@ -147,8 +152,8 @@ public final class LegacyValidation {
             update(shape, entry.getKey());
             update(shape, entry.getValue());
         }
-        content.update(digest(rtf));
-        content.update(digest(plain));
+        content.update(digest(LegacyCrashHardening.digestInput(rtf)));
+        content.update(digest(LegacyCrashHardening.digestInput(plain)));
 
         for (int i = 0; i < node.children.size(); i++) {
             indexes.add(i);
@@ -194,7 +199,7 @@ public final class LegacyValidation {
     private static byte[] digest(String text) {
         try {
             MessageDigest d = MessageDigest.getInstance("SHA-256");
-            return d.digest((text == null ? "" : text).getBytes(StandardCharsets.UTF_8));
+            return d.digest(LegacyCrashHardening.digestInput(text).getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }

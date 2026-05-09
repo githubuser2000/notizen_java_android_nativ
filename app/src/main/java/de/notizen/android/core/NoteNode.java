@@ -1,5 +1,6 @@
 package de.notizen.android.core;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -70,16 +71,41 @@ public final class NoteNode {
 
     public List<NoteNode> walk() {
         ArrayList<NoteNode> out = new ArrayList<>();
-        walkInto(out);
+        ArrayDeque<NoteNode> stack = new ArrayDeque<>();
+        stack.push(this);
+        int count = 0;
+        while (!stack.isEmpty()) {
+            NoteNode node = stack.pop();
+            out.add(node);
+            LegacyCrashHardening.checkTreeNodeCount(++count);
+            for (int i = node.children.size() - 1; i >= 0; i--) {
+                NoteNode child = node.children.get(i);
+                if (child != null) stack.push(child);
+            }
+        }
         return out;
     }
 
-    private void walkInto(List<NoteNode> out) {
-        out.add(this);
-        for (NoteNode child : children) child.walkInto(out);
+    public NoteNode cloneDeep(boolean includeDesktopNote) {
+        NoteNode rootClone = cloneShallow(includeDesktopNote);
+        ArrayDeque<ClonePair> stack = new ArrayDeque<>();
+        stack.push(new ClonePair(this, rootClone, 1));
+        int count = 0;
+        while (!stack.isEmpty()) {
+            ClonePair pair = stack.pop();
+            LegacyCrashHardening.checkTreeDepth(pair.depth);
+            LegacyCrashHardening.checkTreeNodeCount(++count);
+            for (NoteNode child : pair.source.children) {
+                if (child == null) continue;
+                NoteNode childClone = child.cloneShallow(includeDesktopNote);
+                pair.target.addChild(childClone);
+                stack.push(new ClonePair(child, childClone, pair.depth + 1));
+            }
+        }
+        return rootClone;
     }
 
-    public NoteNode cloneDeep(boolean includeDesktopNote) {
+    private NoteNode cloneShallow(boolean includeDesktopNote) {
         NoteNode c = new NoteNode(title, rtf);
         c.expanded = expanded;
         c.bgArgb = bgArgb;
@@ -87,7 +113,17 @@ public final class NoteNode {
         c.extraAttrs.putAll(extraAttrs);
         c.extraChildXml.addAll(extraChildXml);
         if (includeDesktopNote && desktopNote != null) c.desktopNote = desktopNote.copy();
-        for (NoteNode child : children) c.addChild(child.cloneDeep(includeDesktopNote));
         return c;
+    }
+
+    private static final class ClonePair {
+        final NoteNode source;
+        final NoteNode target;
+        final int depth;
+        ClonePair(NoteNode source, NoteNode target, int depth) {
+            this.source = source;
+            this.target = target;
+            this.depth = depth;
+        }
     }
 }

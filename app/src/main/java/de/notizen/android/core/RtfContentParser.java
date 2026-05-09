@@ -14,6 +14,7 @@ import java.util.regex.Pattern;
 final class RtfContentParser {
     private static final Charset CP1252 = Charset.forName("windows-1252");
     private static final String SOFT_LINE_BREAK = "\u2028";
+    private static final int MAX_EDITOR_IMAGE_BYTES = 2 * 1024 * 1024;
     private static final Pattern HYPERLINK_FIELD = Pattern.compile("HYPERLINK\\s+(?:\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"|([^\\\\{}\\s]+))", Pattern.CASE_INSENSITIVE);
 
     private enum SpecialKind { PICT, FIELD, OBJECT }
@@ -129,13 +130,72 @@ final class RtfContentParser {
         }
         if (special.kind == SpecialKind.PICT) {
             String raw = special.pictGroup == null ? special.raw : special.pictGroup;
-            RtfUtils.RtfImage image = parsePictGroup(raw);
-            String mime = image == null ? "" : image.mimeType;
-            byte[] data = image == null ? new byte[0] : image.data;
-            int widthTwips = image == null ? 0 : image.widthTwips;
-            int heightTwips = image == null ? 0 : image.heightTwips;
-            appendVisible(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, new RtfImagePart(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, styleNow(), mime, data, widthTwips, heightTwips));
+            int estimatedBytes = estimatePictPayloadBytes(raw, MAX_EDITOR_IMAGE_BYTES + 1);
+            if (estimatedBytes > MAX_EDITOR_IMAGE_BYTES) {
+                appendVisible(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, new RtfImagePart(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, styleNow(), pictMimeHint(raw), new byte[0], 0, 0));
+                return;
+            }
+            try {
+                RtfUtils.RtfImage image = parsePictGroup(raw);
+                String mime = image == null ? pictMimeHint(raw) : image.mimeType;
+                byte[] data = image == null ? new byte[0] : image.data;
+                int widthTwips = image == null ? 0 : image.widthTwips;
+                int heightTwips = image == null ? 0 : image.heightTwips;
+                appendVisible(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, new RtfImagePart(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, styleNow(), mime, data, widthTwips, heightTwips));
+            } catch (OutOfMemoryError | RuntimeException ex) {
+                appendVisible(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, new RtfImagePart(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, raw, styleNow(), pictMimeHint(raw), new byte[0], 0, 0));
+            }
         }
+    }
+
+
+    private static int estimatePictPayloadBytes(String group, int stopAboveBytes) {
+        if (group == null || group.isEmpty()) return 0;
+        int hexDigits = 0;
+        int cap = Math.max(2, stopAboveBytes) * 2 + 2;
+        for (int i = 0; i < group.length(); i++) {
+            char c = group.charAt(i);
+            if (c == '\\') {
+                i++;
+                if (i >= group.length()) break;
+                char control = group.charAt(i);
+                if (control == '\'') {
+                    i += 2;
+                    continue;
+                }
+                if (Character.isLetter(control)) {
+                    while (i < group.length() && Character.isLetter(group.charAt(i))) i++;
+                    if (i < group.length() && (group.charAt(i) == '-' || group.charAt(i) == '+')) i++;
+                    while (i < group.length() && Character.isDigit(group.charAt(i))) i++;
+                    if (i < group.length() && group.charAt(i) == ' ') {
+                        // Control-word delimiter; consumed by increment at loop end.
+                    } else {
+                        i--;
+                    }
+                    continue;
+                }
+                continue;
+            }
+            if (isHexDigit(c)) {
+                hexDigits++;
+                if (hexDigits > cap) return stopAboveBytes + 1;
+            }
+        }
+        return hexDigits / 2;
+    }
+
+    private static boolean isHexDigit(char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    }
+
+    private static String pictMimeHint(String group) {
+        String g = group == null ? "" : group;
+        if (g.contains("\\pngblip")) return "image/png";
+        if (g.contains("\\jpegblip") || g.contains("\\jpgblip")) return "image/jpeg";
+        if (g.contains("\\dibitmap") || g.contains("\\wbitmap")) return "image/bmp";
+        if (g.contains("\\emfblip")) return "image/x-emf";
+        if (g.contains("\\wmetafile")) return "image/wmf";
+        return "";
     }
 
     private void appendVisible(String text, String rawRtf, RtfContentPart part) {

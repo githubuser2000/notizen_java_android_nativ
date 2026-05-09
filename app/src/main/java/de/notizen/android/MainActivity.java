@@ -205,7 +205,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.114-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.116-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -223,6 +223,7 @@ public final class MainActivity extends Activity {
     private static final int MAX_IMAGE_DISPLAY_LONG_EDGE_PX = 1600;
     private static final int MAX_EMBED_IMAGE_LONG_EDGE_PX = LegacyTouchZoomModel.MAX_EMBED_IMAGE_LONG_EDGE_PX;
     private static final int MAX_EMBEDDED_IMAGE_BYTES = LegacyTouchZoomModel.MAX_EMBEDDED_IMAGE_BYTES;
+    private static final int MAX_READ_ALL_BYTES = 80 * 1024 * 1024;
     private static final int IMAGE_JPEG_QUALITY = 82;
     private static final long EDITOR_TYPING_UNDO_INTERVAL_MS = 900L;
     private static final int MAX_QUICK_SEARCH_RESULTS = 1000;
@@ -690,13 +691,24 @@ public final class MainActivity extends Activity {
             if (span instanceof LeadingMarginSpan.Standard) return "margin:" + ((LeadingMarginSpan.Standard) span).getLeadingMargin(true) + ":" + ((LeadingMarginSpan.Standard) span).getLeadingMargin(false);
             if (span instanceof RtfImageSpan) {
                 RtfImageSpan image = (RtfImageSpan) span;
-                return "image:" + image.mimeType + ":" + image.imageData.length + ":" + image.widthTwips + ":" + image.heightTwips + ":" + image.rawRtf.hashCode();
+                return "image:" + image.mimeType + ":" + image.imageData.length + ":" + image.widthTwips + ":" + image.heightTwips + ":" + sampledTextHash(image.rawRtf);
             }
             if (span instanceof RtfRawSpan) {
                 RtfRawSpan raw = (RtfRawSpan) span;
-                return "raw:" + raw.kind + ":" + raw.rawRtf.length() + ":" + raw.rawRtf.hashCode();
+                return "raw:" + raw.kind + ":" + raw.rawRtf.length() + ":" + sampledTextHash(raw.rawRtf);
             }
             return "";
+        }
+
+        private static int sampledTextHash(String text) {
+            if (text == null || text.isEmpty()) return 0;
+            int len = text.length();
+            if (len <= 8192) return text.hashCode();
+            int h = 146959810;
+            h = 31 * h + len;
+            for (int i = 0; i < 4096; i++) h = 31 * h + text.charAt(i);
+            for (int i = Math.max(4096, len - 4096); i < len; i++) h = 31 * h + text.charAt(i);
+            return h;
         }
     }
 
@@ -1280,7 +1292,7 @@ public final class MainActivity extends Activity {
             if (wouldOverwriteUsefulRuntimeSnapshotWithBlankDocument()) return;
             writeAtomic(runtimeSnapshotFile(), AlxIo.documentToXmlBytes(document));
             writeAtomic(runtimeSnapshotMetaFile(), runtimeSnapshotMetaText().getBytes(StandardCharsets.UTF_8));
-        } catch (Exception ignored) {
+        } catch (Throwable ignored) {
             // Runtime snapshots must never interrupt editing, saving or shutdown.
         }
     }
@@ -1346,15 +1358,24 @@ public final class MainActivity extends Activity {
         File parent = file.getParentFile();
         if (parent != null && !parent.exists()) parent.mkdirs();
         File tmp = new File(file.getParentFile() == null ? getFilesDir() : file.getParentFile(), file.getName() + ".tmp");
-        FileOutputStream out = new FileOutputStream(tmp, false);
-        out.write(data == null ? new byte[0] : data);
-        out.getFD().sync();
-        out.close();
+        FileOutputStream out = null;
+        try {
+            out = new FileOutputStream(tmp, false);
+            out.write(data == null ? new byte[0] : data);
+            out.getFD().sync();
+        } finally {
+            if (out != null) try { out.close(); } catch (Exception ignored) {}
+        }
         if (!tmp.renameTo(file)) {
-            FileOutputStream fallback = new FileOutputStream(file, false);
-            fallback.write(data == null ? new byte[0] : data);
-            fallback.close();
-            tmp.delete();
+            FileOutputStream fallback = null;
+            try {
+                fallback = new FileOutputStream(file, false);
+                fallback.write(data == null ? new byte[0] : data);
+                fallback.getFD().sync();
+            } finally {
+                if (fallback != null) try { fallback.close(); } catch (Exception ignored) {}
+                tmp.delete();
+            }
         }
     }
 
@@ -1754,6 +1775,44 @@ public final class MainActivity extends Activity {
         return row;
     }
 
+
+    private View.OnClickListener safeClick(String label, View.OnClickListener listener) {
+        return view -> {
+            try {
+                listener.onClick(view);
+            } catch (Throwable t) {
+                handleRecoverableUiFailure(label, t);
+            }
+        };
+    }
+
+    private ContinueCallback safeAction(String label, ContinueCallback action) {
+        return () -> {
+            try {
+                action.run();
+            } catch (Throwable t) {
+                handleRecoverableUiFailure(label, t);
+            }
+        };
+    }
+
+    private void handleRecoverableUiFailure(String label, Throwable throwable) {
+        try { saveRuntimeSnapshotNow(Looper.myLooper() == Looper.getMainLooper()); } catch (Throwable ignored) {}
+        if (throwable instanceof OutOfMemoryError) {
+            try { System.gc(); } catch (Throwable ignored) {}
+        }
+        String action = label == null || label.trim().isEmpty() ? "Aktion" : label;
+        error(action, recoverableFailureMessage(throwable));
+    }
+
+    private String recoverableFailureMessage(Throwable throwable) {
+        if (throwable instanceof OutOfMemoryError) return "Android hatte nicht genug freien Speicher. Der letzte sinnvolle Stand wurde soweit möglich gesichert. Bitte große Bilder/Dateien verkleinern oder die App neu öffnen.";
+        if (throwable instanceof StackOverflowError) return "Der Baum oder RTF-Inhalt ist zu tief verschachtelt. Die Aktion wurde abgebrochen, damit die App weiterläuft.";
+        String message = throwable == null ? "" : throwable.getMessage();
+        if (message == null || message.trim().isEmpty()) message = throwable == null ? "Unbekannter Fehler." : throwable.getClass().getSimpleName();
+        return message;
+    }
+
     private TextView addButton(LinearLayout toolbar, String label, View.OnClickListener listener) {
         LegacyToolbarPresentation.ButtonSpec spec = LegacyToolbarPresentation.forLabel(label);
         TextView b = new TextView(this);
@@ -1775,7 +1834,7 @@ public final class MainActivity extends Activity {
         b.setFocusable(true);
         b.setContentDescription(spec.contentDescription());
         if (Build.VERSION.SDK_INT >= 26) b.setTooltipText(spec.contentDescription());
-        b.setOnClickListener(listener);
+        b.setOnClickListener(safeClick(label, listener));
         toolbarSquareViews.add(b);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(toolbarButtonDp), dp(toolbarButtonDp));
         params.setMargins(dp(TOOLBAR_BUTTON_MARGIN_DP), dp(1), dp(TOOLBAR_BUTTON_MARGIN_DP), dp(1));
@@ -1854,7 +1913,7 @@ public final class MainActivity extends Activity {
         b.setBackground(toolbarButtonBackground());
         b.setContentDescription(description);
         if (Build.VERSION.SDK_INT >= 26) b.setTooltipText(description);
-        b.setOnClickListener(listener);
+        b.setOnClickListener(safeClick(description, listener));
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(34), dp(30));
         p.setMargins(dp(2), 0, dp(2), 0);
         b.setLayoutParams(p);
@@ -2718,8 +2777,8 @@ public final class MainActivity extends Activity {
             saveRuntimeSnapshotNow(false);
             updateAndroidWidgetsFromDocument();
             status("Gespeichert: " + currentDisplayName);
-        } catch (Exception e) {
-            error("Speichern fehlgeschlagen", e.getMessage());
+        } catch (Throwable e) {
+            handleRecoverableUiFailure("Speichern fehlgeschlagen", e);
         }
     }
 
@@ -2733,8 +2792,12 @@ public final class MainActivity extends Activity {
             try { if (file.isFile()) previous = readFile(file); } catch (Exception ignored) {}
             byte[] payload = AlxIo.dump(document, document.password);
             FileOutputStream out = new FileOutputStream(file, false);
-            out.write(payload);
-            out.close();
+            try {
+                out.write(payload);
+                out.getFD().sync();
+            } finally {
+                try { out.close(); } catch (Exception ignored) {}
+            }
             AndroidBackupStore.createBackup(this, file.getName(), previous, settings == null ? 30 : settings.backupKeep);
             currentUri = null;
             currentRawFile = file;
@@ -2749,8 +2812,8 @@ public final class MainActivity extends Activity {
             saveRuntimeSnapshotNow(false);
             updateAndroidWidgetsFromDocument();
             status((autosave ? "Autosave" : "Gespeichert") + ": " + file.getAbsolutePath());
-        } catch (Exception e) {
-            error(autosave ? "Autosave fehlgeschlagen" : "Speichern fehlgeschlagen", e.getMessage());
+        } catch (Throwable e) {
+            handleRecoverableUiFailure(autosave ? "Autosave fehlgeschlagen" : "Speichern fehlgeschlagen", e);
         }
     }
 
@@ -2786,19 +2849,30 @@ public final class MainActivity extends Activity {
             finishLoadedDocument("Sicherung geöffnet: bitte mit 'Speichern unter' sichern");
         } catch (AlxException.PasswordRequired e) {
             showPasswordDialog("", p -> openBackupFile(file, p));
-        } catch (Exception e) {
-            error("Sicherung", e.getMessage());
+        } catch (Throwable e) {
+            handleRecoverableUiFailure("Sicherung", e);
         }
     }
 
     private byte[] readFile(File file) throws Exception {
+        if (file == null) throw new IllegalStateException("Dateipfad fehlt.");
+        long length = file.length();
+        if (length > MAX_READ_ALL_BYTES) throw new IllegalStateException("Datei ist zu groß für sicheres Laden auf Android (" + (length / (1024 * 1024)) + " MB).");
         FileInputStream in = new FileInputStream(file);
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
-        in.close();
-        return out.toByteArray();
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream(length > 0 && length < Integer.MAX_VALUE ? (int) length : 8192);
+            byte[] buf = new byte[8192];
+            int n;
+            int total = 0;
+            while ((n = in.read(buf)) != -1) {
+                if (total > MAX_READ_ALL_BYTES - n) throw new IllegalStateException("Datei ist zu groß für sicheres Laden auf Android.");
+                out.write(buf, 0, n);
+                total += n;
+            }
+            return out.toByteArray();
+        } finally {
+            try { in.close(); } catch (Exception ignored) {}
+        }
     }
 
 
@@ -2865,8 +2939,8 @@ public final class MainActivity extends Activity {
             finishLoadedDocument("Geöffnet: " + file.getAbsolutePath());
         } catch (AlxException.PasswordRequired e) {
             showPasswordDialog("", p -> openRawFile(file, p));
-        } catch (Exception e) {
-            error("Öffnen fehlgeschlagen", e.getMessage());
+        } catch (Throwable e) {
+            handleRecoverableUiFailure("Öffnen fehlgeschlagen", e);
         }
     }
 
@@ -3124,7 +3198,7 @@ public final class MainActivity extends Activity {
             saveRuntimeSnapshotNow(false);
             updateAndroidWidgetsFromDocument();
             status("FTP gespeichert: " + result.safeDisplayUrl());
-            if (afterSave != null && !document.changed) afterSave.run();
+            if (afterSave != null && document != null && !document.changed) safeAction("Aktion nach Speichern", afterSave).run();
         });
     }
 
@@ -3161,9 +3235,15 @@ public final class MainActivity extends Activity {
         ioExecutor.execute(() -> {
             try {
                 T result = work.run();
-                mainHandler.post(() -> done.run(result));
-            } catch (Exception e) {
-                mainHandler.post(() -> error(title, e.getMessage()));
+                mainHandler.post(() -> {
+                    try {
+                        done.run(result);
+                    } catch (Throwable t) {
+                        handleRecoverableUiFailure(title, t);
+                    }
+                });
+            } catch (Throwable t) {
+                mainHandler.post(() -> handleRecoverableUiFailure(title, t));
             }
         });
     }
@@ -3687,7 +3767,7 @@ public final class MainActivity extends Activity {
     private void addMenuAction(List<String> labels, List<ContinueCallback> actions, String label, ContinueCallback action) {
         if (labels == null || actions == null || label == null || action == null) return;
         labels.add(label);
-        actions.add(action);
+        actions.add(safeAction(label, action));
     }
 
     private void selectAllEditorText() {
@@ -5264,39 +5344,57 @@ public final class MainActivity extends Activity {
     }
 
     private PreparedImage compressBitmapForRtf(Bitmap bitmap, String note) throws Exception {
+        if (bitmap == null || bitmap.isRecycled()) throw new IllegalStateException("Das Bild konnte nicht verarbeitet werden.");
         Bitmap current = bitmap;
-        byte[] bytes = compressJpeg(current, IMAGE_JPEG_QUALITY);
         int quality = IMAGE_JPEG_QUALITY;
-        while (bytes.length > MAX_EMBEDDED_IMAGE_BYTES && quality > 52) {
-            quality -= 8;
-            bytes = compressJpeg(current, quality);
-        }
-        while (bytes.length > MAX_EMBEDDED_IMAGE_BYTES && Math.max(current.getWidth(), current.getHeight()) > 360) {
-            int nextWidth = Math.max(1, Math.round(current.getWidth() * 0.78f));
-            int nextHeight = Math.max(1, Math.round(current.getHeight() * 0.78f));
-            Bitmap scaled = Bitmap.createScaledBitmap(current, nextWidth, nextHeight, true);
-            if (current != bitmap) current.recycle();
+        byte[] bytes = compressJpeg(current, quality);
+        int safety = 0;
+        while ((bytes.length == 0 || bytes.length > MAX_EMBEDDED_IMAGE_BYTES) && safety++ < 18) {
+            if (bytes.length > MAX_EMBEDDED_IMAGE_BYTES && quality > 52) {
+                quality -= 8;
+                bytes = compressJpeg(current, quality);
+                continue;
+            }
+            if (Math.max(current.getWidth(), current.getHeight()) <= 360) break;
+            int nextWidth = Math.max(1, Math.round(current.getWidth() * 0.72f));
+            int nextHeight = Math.max(1, Math.round(current.getHeight() * 0.72f));
+            Bitmap scaled = null;
+            try {
+                scaled = Bitmap.createScaledBitmap(current, nextWidth, nextHeight, true);
+            } catch (OutOfMemoryError oom) {
+                try { System.gc(); } catch (Throwable ignored) {}
+            } catch (RuntimeException ex) {
+                break;
+            }
+            if (scaled == null || scaled.isRecycled()) break;
+            if (current != bitmap) {
+                try { current.recycle(); } catch (Exception ignored) {}
+            }
             current = scaled;
             quality = IMAGE_JPEG_QUALITY;
             bytes = compressJpeg(current, quality);
-            while (bytes.length > MAX_EMBEDDED_IMAGE_BYTES && quality > 52) {
-                quality -= 8;
-                bytes = compressJpeg(current, quality);
-            }
         }
         if (current != bitmap) {
             try { current.recycle(); } catch (Exception ignored) {}
         }
-        if (bytes.length > MAX_EMBEDDED_IMAGE_BYTES) {
+        if (bytes.length == 0 || bytes.length > MAX_EMBEDDED_IMAGE_BYTES) {
             throw new IllegalStateException("Das Bild bleibt trotz Verkleinerung zu groß für ein stabiles RTF-Einbetten.");
         }
         return new PreparedImage(bytes, "image/jpeg", note);
     }
 
     private byte[] compressJpeg(Bitmap bitmap, int quality) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.JPEG, Math.max(45, Math.min(95, quality)), out);
-        return out.toByteArray();
+        if (bitmap == null || bitmap.isRecycled()) return new byte[0];
+        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(MAX_EMBEDDED_IMAGE_BYTES + 1024, Math.max(8192, bitmap.getWidth() * bitmap.getHeight() / 8)));
+        try {
+            boolean ok = bitmap.compress(Bitmap.CompressFormat.JPEG, Math.max(45, Math.min(95, quality)), out);
+            return ok ? out.toByteArray() : new byte[0];
+        } catch (OutOfMemoryError oom) {
+            try { System.gc(); } catch (Throwable ignored) {}
+            return new byte[0];
+        } catch (RuntimeException ex) {
+            return new byte[0];
+        }
     }
 
     private int calculateImageSampleSize(int width, int height, int maxLongEdge) {
@@ -5865,6 +5963,9 @@ public final class MainActivity extends Activity {
                 bitmap = BitmapFactory.decodeByteArray(data, 0, data.length, options);
             } catch (OutOfMemoryError oom) {
                 sample = Math.max(sample + 1, sample * 2);
+                try { System.gc(); } catch (Throwable ignored) {}
+            } catch (RuntimeException ex) {
+                return null;
             }
         }
         if (bitmap == null) return null;
@@ -7017,7 +7118,7 @@ public final class MainActivity extends Activity {
     private void confirmDiscardThen(ContinueCallback callback) {
         saveCurrentEditorToNode();
         if (!LegacyDialogModels.shouldShowWannaSave(document.changed) || isBlankSingleNodeDocumentForPrompt(document)) {
-            callback.run();
+            safeAction("Aktion fortsetzen", callback).run();
             return;
         }
         LegacyDialogModels.DialogSpec spec = LegacyDialogModels.wannaSave(settings == null ? "Deutsch" : settings.language);
@@ -7025,7 +7126,7 @@ public final class MainActivity extends Activity {
                 .setTitle(spec.title)
                 .setMessage(spec.message)
                 .setPositiveButton(spec.positive, (d, which) -> saveThenMaybeContinue(callback))
-                .setNeutralButton(spec.neutral, (d, which) -> callback.run())
+                .setNeutralButton(spec.neutral, (d, which) -> safeAction("Aktion ohne Speichern", callback).run())
                 .setNegativeButton(spec.negative, null)
                 .show();
     }
@@ -7033,17 +7134,17 @@ public final class MainActivity extends Activity {
     private void saveThenMaybeContinue(ContinueCallback callback) {
         saveCurrentEditorToNode();
         if (!document.changed) {
-            callback.run();
+            safeAction("Aktion nach Speichern", callback).run();
             return;
         }
         if (currentUri != null) {
             writeDocumentToUri(currentUri, currentDisplayName, false);
-            if (!document.changed) callback.run();
+            if (!document.changed) safeAction("Aktion nach Speichern", callback).run();
             return;
         }
         if (currentRawFile != null) {
             writeDocumentToFile(currentRawFile, false);
-            if (!document.changed) callback.run();
+            if (!document.changed) safeAction("Aktion nach Speichern", callback).run();
             return;
         }
         if (currentFtpTarget != null) {
@@ -7173,11 +7274,11 @@ public final class MainActivity extends Activity {
             finishLoadedDocument("Geöffnet: " + currentDisplayName);
         } catch (AlxException.PasswordRequired e) {
             byte[] copy;
-            try { copy = readAll(uri); } catch (Exception readError) { error("Öffnen fehlgeschlagen", readError.getMessage()); return; }
+            try { copy = readAll(uri); } catch (Throwable readError) { handleRecoverableUiFailure("Öffnen fehlgeschlagen", readError); return; }
             final byte[] data = copy;
             showPasswordDialog("", p -> openBytesAfterPassword(uri, data, p));
-        } catch (Exception e) {
-            error("Öffnen fehlgeschlagen", e.getMessage());
+        } catch (Throwable e) {
+            handleRecoverableUiFailure("Öffnen fehlgeschlagen", e);
         }
     }
 
@@ -7195,8 +7296,8 @@ public final class MainActivity extends Activity {
             editorDirty = false;
             titleDirty = false;
             finishLoadedDocument("Geöffnet: " + currentDisplayName);
-        } catch (Exception e) {
-            error("Öffnen fehlgeschlagen", e.getMessage());
+        } catch (Throwable e) {
+            handleRecoverableUiFailure("Öffnen fehlgeschlagen", e);
         }
     }
 
@@ -7217,51 +7318,51 @@ public final class MainActivity extends Activity {
             pendingAfterSaveAsCallback = null;
             takeReadWritePermission(uri);
             writeDocumentToUri(uri, queryDisplayName(uri), true);
-            if (afterSave != null && !document.changed) afterSave.run();
+            if (afterSave != null && document != null && !document.changed) safeAction("Aktion nach Speichern", afterSave).run();
         } else if (requestCode == REQ_EXPORT_TEXT || requestCode == REQ_EXPORT_TEXT_ANSI || requestCode == REQ_EXPORT_TEXT_UNICODE) {
             try {
                 writeAll(uri, pendingExportTextBytes == null ? (pendingExportText == null ? new byte[0] : pendingExportText.getBytes(java.nio.charset.StandardCharsets.UTF_8)) : pendingExportTextBytes);
                 if (requestCode == REQ_EXPORT_TEXT_ANSI) status(LegacyTextExportModel.status(LegacyTextExportModel.Mode.ANSI));
                 else if (requestCode == REQ_EXPORT_TEXT_UNICODE) status(LegacyTextExportModel.status(LegacyTextExportModel.Mode.UNICODE));
                 else status(LegacyTextExportModel.status(LegacyTextExportModel.Mode.UTF8));
-            } catch (Exception e) { error("Export fehlgeschlagen", e.getMessage()); }
+            } catch (Throwable e) { handleRecoverableUiFailure("Export fehlgeschlagen", e); }
         } else if (requestCode == REQ_EXPORT_HTML) {
             try {
                 writeAll(uri, (pendingExportHtml == null ? "" : pendingExportHtml).getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 status("HTML exportiert");
-            } catch (Exception e) { error("Export fehlgeschlagen", e.getMessage()); }
+            } catch (Throwable e) { handleRecoverableUiFailure("Export fehlgeschlagen", e); }
         } else if (requestCode == REQ_EXPORT_RTF) {
             try {
                 writeAll(uri, (pendingExportRtf == null ? "" : pendingExportRtf).getBytes(java.nio.charset.Charset.forName("windows-1252")));
                 status("RTF exportiert");
-            } catch (Exception e) { error("Export fehlgeschlagen", e.getMessage()); }
+            } catch (Throwable e) { handleRecoverableUiFailure("Export fehlgeschlagen", e); }
         } else if (requestCode == REQ_EXPORT_NODE_TEXT) {
             try {
                 writeAll(uri, pendingExportTextBytes == null ? (pendingExportText == null ? new byte[0] : pendingExportText.getBytes(java.nio.charset.StandardCharsets.UTF_8)) : pendingExportTextBytes);
                 status("Knoten-TXT exportiert");
-            } catch (Exception e) { error("Knoten-Export fehlgeschlagen", e.getMessage()); }
+            } catch (Throwable e) { handleRecoverableUiFailure("Knoten-Export fehlgeschlagen", e); }
         } else if (requestCode == REQ_EXPORT_NODE_RTF) {
             try {
                 writeAll(uri, (pendingExportRtf == null ? "" : pendingExportRtf).getBytes(java.nio.charset.Charset.forName("windows-1252")));
                 status("Knoten-RTF exportiert");
-            } catch (Exception e) { error("Knoten-Export fehlgeschlagen", e.getMessage()); }
+            } catch (Throwable e) { handleRecoverableUiFailure("Knoten-Export fehlgeschlagen", e); }
         } else if (requestCode == REQ_EXPORT_GENERIC) {
             try {
                 writeAll(uri, pendingGenericExportBytes == null ? new byte[0] : pendingGenericExportBytes);
                 status(pendingGenericExportStatus == null ? "Export gespeichert" : pendingGenericExportStatus);
                 askShareAfterGenericExport();
-            } catch (Exception e) { error("Export fehlgeschlagen", e.getMessage()); }
+            } catch (Throwable e) { handleRecoverableUiFailure("Export fehlgeschlagen", e); }
         } else if (requestCode == REQ_IMPORT_CONFIG) {
             try {
                 applyImportedSettings(readAll(uri));
-            } catch (Exception e) { error("Config-Import", e.getMessage()); }
+            } catch (Throwable e) { handleRecoverableUiFailure("Config-Import", e); }
         } else if (requestCode == REQ_INSERT_IMAGE) {
             insertImageFromUri(uri);
         } else if (requestCode == REQ_EXPORT_CONFIG) {
             try {
                 writeAll(uri, pendingExportConfig == null ? new byte[0] : pendingExportConfig);
                 status("Config exportiert");
-            } catch (Exception e) { error("Config-Export", e.getMessage()); }
+            } catch (Throwable e) { handleRecoverableUiFailure("Config-Export", e); }
         } else if (requestCode == REQ_IMPORT_HTML) {
             importHtmlNoteFromUri(uri);
         } else if (requestCode == REQ_IMPORT_TEXT) {
@@ -7272,15 +7373,29 @@ public final class MainActivity extends Activity {
     }
 
     private byte[] readAll(Uri uri) throws Exception {
+        long size = queryOpenableSize(uri);
+        if (size > MAX_READ_ALL_BYTES) throw new IllegalStateException("Datei ist zu groß für sicheres Laden auf Android (" + (size / (1024 * 1024)) + " MB).");
+        return readAllChecked(uri, MAX_READ_ALL_BYTES);
+    }
+
+    private byte[] readAllChecked(Uri uri, int maxBytes) throws Exception {
         ContentResolver resolver = getContentResolver();
         InputStream in = resolver.openInputStream(uri);
         if (in == null) throw new IllegalStateException("Datei kann nicht gelesen werden.");
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
-        in.close();
-        return out.toByteArray();
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            int total = 0;
+            while ((n = in.read(buf)) != -1) {
+                if (total > maxBytes - n) throw new IllegalStateException("Datei ist zu groß für sicheres Laden auf Android.");
+                out.write(buf, 0, n);
+                total += n;
+            }
+            return out.toByteArray();
+        } finally {
+            try { in.close(); } catch (Exception ignored) {}
+        }
     }
 
     private byte[] readAllLimited(Uri uri, int limit) throws Exception {
@@ -7324,8 +7439,11 @@ public final class MainActivity extends Activity {
     private void writeAll(Uri uri, byte[] bytes) throws Exception {
         OutputStream out = getContentResolver().openOutputStream(uri, "wt");
         if (out == null) throw new IllegalStateException("Datei kann nicht geschrieben werden.");
-        out.write(bytes == null ? new byte[0] : bytes);
-        out.close();
+        try {
+            out.write(bytes == null ? new byte[0] : bytes);
+        } finally {
+            try { out.close(); } catch (Exception ignored) {}
+        }
     }
 
     private void takeReadWritePermission(Uri uri) {
@@ -7411,11 +7529,26 @@ public final class MainActivity extends Activity {
     private void toast(String text) { Toast.makeText(this, text, Toast.LENGTH_SHORT).show(); }
 
     private void error(String title, String message) {
-        new AlertDialog.Builder(this)
-                .setTitle(title == null ? "Fehler" : title)
-                .setMessage(message == null || message.isEmpty() ? "Unbekannter Fehler." : message)
-                .setPositiveButton("OK", null)
-                .show();
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            if (mainHandler == null) mainHandler = new Handler(Looper.getMainLooper());
+            mainHandler.post(() -> error(title, message));
+            return;
+        }
+        String safeTitle = title == null || title.trim().isEmpty() ? "Fehler" : title;
+        String safeMessage = message == null || message.trim().isEmpty() ? "Unbekannter Fehler." : message;
+        try {
+            if (isFinishing() || (Build.VERSION.SDK_INT >= 17 && isDestroyed())) {
+                Toast.makeText(this, safeTitle + ": " + safeMessage, Toast.LENGTH_LONG).show();
+                return;
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle(safeTitle)
+                    .setMessage(safeMessage)
+                    .setPositiveButton("OK", null)
+                    .show();
+        } catch (Throwable ignored) {
+            try { Toast.makeText(this, safeTitle + ": " + safeMessage, Toast.LENGTH_LONG).show(); } catch (Throwable ignoredToo) {}
+        }
     }
 
     private float dpf(float value) {

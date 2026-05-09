@@ -1,5 +1,6 @@
 package de.notizen.android.core;
 
+import java.util.ArrayDeque;
 import java.util.regex.Pattern;
 
 public final class TreeStats {
@@ -19,25 +20,38 @@ public final class TreeStats {
     public static TreeStats collect(NoteNode root) {
         TreeStats stats = new TreeStats();
         if (root == null) return stats;
-        collectInto(root, 1, stats);
+        ArrayDeque<Frame> stack = new ArrayDeque<>();
+        stack.push(new Frame(root, 1));
+        while (!stack.isEmpty()) {
+            Frame frame = stack.pop();
+            NoteNode node = frame.node;
+            if (node == null) continue;
+            LegacyCrashHardening.checkTreeDepth(frame.depth);
+            LegacyCrashHardening.checkTreeNodeCount(stats.nodes + 1);
+            stats.nodes++;
+            if (node.children.isEmpty()) stats.leaves++;
+            if (frame.depth > stats.maxDepth) stats.maxDepth = frame.depth;
+            if (node.desktopNote != null) stats.desktopNotes++;
+            String rtf = node.rtf == null ? "" : node.rtf;
+            stats.rtfBytes = LegacyCrashHardening.saturatedAdd(stats.rtfBytes, LegacyCrashHardening.utf8LengthEstimate(rtf));
+            stats.images = LegacyCrashHardening.saturatedAdd(stats.images, RtfUtils.countImages(rtf));
+            String text = RtfUtils.rtfToPlainText(rtf);
+            stats.characters = LegacyCrashHardening.saturatedAdd(stats.characters, text.length());
+            int noSpace = 0;
+            for (int i = 0; i < text.length(); i++) if (!Character.isWhitespace(text.charAt(i))) noSpace++;
+            stats.charactersNoSpace = LegacyCrashHardening.saturatedAdd(stats.charactersNoSpace, noSpace);
+            stats.lines = LegacyCrashHardening.saturatedAdd(stats.lines, countLines(text));
+            java.util.regex.Matcher m = WORD_RE.matcher(text);
+            while (m.find()) stats.words = LegacyCrashHardening.saturatedAdd(stats.words, 1);
+            for (int i = node.children.size() - 1; i >= 0; i--) stack.push(new Frame(node.children.get(i), frame.depth + 1));
+        }
         return stats;
     }
 
-    private static void collectInto(NoteNode node, int depth, TreeStats stats) {
-        stats.nodes++;
-        if (node.children.isEmpty()) stats.leaves++;
-        if (depth > stats.maxDepth) stats.maxDepth = depth;
-        if (node.desktopNote != null) stats.desktopNotes++;
-        String rtf = node.rtf == null ? "" : node.rtf;
-        stats.rtfBytes += rtf.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-        stats.images += RtfUtils.countImages(rtf);
-        String text = RtfUtils.rtfToPlainText(rtf);
-        stats.characters += text.length();
-        for (int i = 0; i < text.length(); i++) if (!Character.isWhitespace(text.charAt(i))) stats.charactersNoSpace++;
-        stats.lines += countLines(text);
-        java.util.regex.Matcher m = WORD_RE.matcher(text);
-        while (m.find()) stats.words++;
-        for (NoteNode child : node.children) collectInto(child, depth + 1, stats);
+    private static final class Frame {
+        final NoteNode node;
+        final int depth;
+        Frame(NoteNode node, int depth) { this.node = node; this.depth = depth; }
     }
 
     private static int countLines(String text) {

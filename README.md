@@ -469,3 +469,16 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Rückkehr aus der Markdown-WebView-Vorschau härtet den echten RTF-Editor: KeyListener/InputType, Fokus, sichtbarer Cursor, Auswahlfarbe und Cursor-Zeichnung werden explizit wiederhergestellt.
 - Die RTF-Auswahl bleibt nach dem Ausschalten der Markdown-Vorschau wieder sichtbar, damit man erkennt, wie viel Text markiert ist.
 - Version erhöht auf `versionCode 114` / `versionName 1.0.114-java-android-nativ`.
+
+### v116
+- Crash-/ANR-Prüfung und Stabilisierung: große RTF-`\pict`-Bilder werden beim Editoraufbau und in HTML/Vorschau-Pfaden vor dem Dekodieren größenabgeschätzt; zu große Bilder bleiben im RTF erhalten, werden aber nur als Platzhalter angezeigt.
+- Statistik/Validierung zählt RTF-Bilder jetzt ohne Bilddaten zu dekodieren.
+- Datei-/ALX-Laden hat harte Android-Sicherheitsgrenzen für Rohdateien und entpackte GZip-ALX-Daten, damit extrem große Dateien nicht unkontrolliert Speicher belegen.
+- Toolbar- und Kontextmenü-Aktionen sind gegen Runtime-Fehler, Out-of-Memory und StackOverflow abgefangen; vor einer Fehlermeldung wird soweit möglich ein Runtime-Snapshot geschrieben.
+- Hintergrund-Callbacks und Fehlerdialoge sind robuster gegen UI-Thread-/Lifecycle-Probleme.
+- Baum-Undo- und RTF-Historie verwenden bei sehr großen RTF-/Bild-Rohstrings nur Stichproben-Hashes, damit Undo-Signaturen nicht minutenlang große Bildstrings scannen.
+- Zusätzliche v116-Härtung: Baumläufe, sichtbare Baumläufe, Statistik und Klonen arbeiten jetzt iterativ bzw. mit Tiefen-/Knotenlimits, damit sehr tiefe Bäume keinen StackOverflow auslösen.
+- ALX-Laden und ALX-Schreiben prüfen Baumtiefe und Knotenanzahl vor rekursiven DOM-Pfaden.
+- JPEG-Kompression und Skalierung großer Bilder fangen OOM/Runtime-Fehler ab und brechen nur das Bild ab, nicht die App.
+- Quick-Search-Kleinbuttons verwenden jetzt den korrekten Beschreibungstext im sicheren Click-Wrapper.
+- Version erhöht auf `versionCode 116` / `versionName 1.0.116-java-android-nativ`.

@@ -108,7 +108,7 @@ public final class LegacyTreeUndoModel {
         appendEscaped(b, node.title);
         b.append('|').append(node.expanded ? '1' : '0');
         b.append('|').append(node.bgArgb).append('|').append(node.fgArgb);
-        b.append('|').append(node.rtf == null ? 0 : node.rtf.hashCode()).append(':').append(node.rtf == null ? 0 : node.rtf.length());
+        b.append('|').append(sampledHash(node.rtf)).append(':').append(node.rtf == null ? 0 : node.rtf.length());
         b.append("|attrs=");
         for (Map.Entry<String, String> entry : node.extraAttrs.entrySet()) {
             appendEscaped(b, entry.getKey());
@@ -118,13 +118,25 @@ public final class LegacyTreeUndoModel {
         }
         b.append("|extra=");
         for (String extra : node.extraChildXml) {
-            b.append(extra == null ? 0 : extra.hashCode()).append(':').append(extra == null ? 0 : extra.length()).append(';');
+            b.append(sampledHash(extra)).append(':').append(extra == null ? 0 : extra.length()).append(';');
         }
         b.append("|desk=");
         appendDesktopSignature(b, node.desktopNote);
         b.append("|children=").append(node.children.size());
         for (NoteNode child : node.children) appendNodeSignature(b, child);
         b.append('}');
+    }
+
+
+    private static int sampledHash(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        int len = text.length();
+        if (len <= 8192) return text.hashCode();
+        int h = 1125899907;
+        h = 31 * h + len;
+        for (int i = 0; i < 4096; i++) h = 31 * h + text.charAt(i);
+        for (int i = Math.max(4096, len - 4096); i < len; i++) h = 31 * h + text.charAt(i);
+        return h;
     }
 
     private static void appendDesktopSignature(StringBuilder b, DesktopNoteState state) {
