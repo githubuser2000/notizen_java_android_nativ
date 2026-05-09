@@ -346,3 +346,14 @@ Neu hinzugekommen sind `LegacyFontSetModel`, `LegacyWindowMoveResizeModel` und `
 - Baumknoten können nun mobil fett, kursiv, unterstrichen, durchgestrichen, mit Fontfamilie, Fontgröße sowie Text-/Hintergrundfarbe dargestellt und als ALX-Zusatzattribute erhalten werden.
 - Erster Leistenbutton `Leer` stellt nach Speicherabfrage einen leeren Ein-Knoten-Startzustand her.
 - Snapshot- und Editor-Sicherungen wurden gegen versehentliches Überschreiben mit transient leeren Zuständen gehärtet.
+## v102
+
+- Version erhöht auf `versionCode 102` / `versionName 1.0.102-java-android-nativ`.
+- Die mittlere der drei oberen Leisten heißt jetzt `Baum/Text` und unterscheidet aktiv zwischen Baum, RTF-Editor und Titelzeile.
+- `Kopieren`, `Ausschneiden`, `Einfügen` und `Löschen` wirken nun auf den aktiven Bereich: Baumknoten, markierten RTF-Text oder markierten Titeltext.
+- RTF-Kopieren/Ausschneiden hält intern eine formatierte `Spannable`-Zwischenablage, schreibt zusätzlich Plaintext ins Android-Clipboard und fügt eigene RTF-Auswahl wieder mit Formatierung ein.
+- `Einrücken` und `Ausrücken` wirken im RTF-Editor als Absatzeinzug und im Baum weiterhin als Knotenein-/ausrücken.
+- Rein baumbezogene Aktionen der mittleren Leiste sind geschützt: Ist der RTF-Editor oder die Titelzeile aktiv, verändern sie den Baum nicht versehentlich, sondern fordern zum Antippen des Baums auf.
+- Zwischenablagen werden sauber getrennt, damit eine später kopierte Textauswahl keinen alten Knoten mehr aus der internen Knoten-Zwischenablage einfügt.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
+

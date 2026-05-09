@@ -344,3 +344,14 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Android-Schriftfamilien werden sichtbar auf verfügbare Android-Familien gemappt, bleiben aber beim Speichern als Legacy-Fontnamen im RTF erhalten.
 - Laufzeit-Snapshots überschreiben eine vorhandene sinnvolle Wiederherstellung nicht mehr mit einem verdächtig leeren Ein-Knoten-Zustand.
 - Zusätzlicher Schutz verhindert, dass ein transient leeres Editorfeld beim Arbeiten im Baum vorhandenes RTF unbeabsichtigt ersetzt.
+## v102
+
+- Version erhöht auf `versionCode 102` / `versionName 1.0.102-java-android-nativ`.
+- Die mittlere der drei oberen Leisten heißt jetzt `Baum/Text` und unterscheidet aktiv zwischen Baum, RTF-Editor und Titelzeile.
+- `Kopieren`, `Ausschneiden`, `Einfügen` und `Löschen` wirken nun auf den aktiven Bereich: Baumknoten, markierten RTF-Text oder markierten Titeltext.
+- RTF-Kopieren/Ausschneiden hält intern eine formatierte `Spannable`-Zwischenablage, schreibt zusätzlich Plaintext ins Android-Clipboard und fügt eigene RTF-Auswahl wieder mit Formatierung ein.
+- `Einrücken` und `Ausrücken` wirken im RTF-Editor als Absatzeinzug und im Baum weiterhin als Knotenein-/ausrücken.
+- Rein baumbezogene Aktionen der mittleren Leiste sind geschützt: Ist der RTF-Editor oder die Titelzeile aktiv, verändern sie den Baum nicht versehentlich, sondern fordern zum Antippen des Baums auf.
+- Zwischenablagen werden sauber getrennt, damit eine später kopierte Textauswahl keinen alten Knoten mehr aus der internen Knoten-Zwischenablage einfügt.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
+

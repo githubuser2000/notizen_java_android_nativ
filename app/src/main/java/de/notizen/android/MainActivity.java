@@ -183,7 +183,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.101-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.102-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -226,6 +226,8 @@ public final class MainActivity extends Activity {
     private String pendingExportRtf;
     private byte[] pendingExportConfig;
     private NoteNode internalClipboardNode;
+    private SpannableStringBuilder internalEditorClipboard;
+    private String internalEditorClipboardPlain = "";
     private LegacySettings settings = new LegacySettings();
     private FtpTarget currentFtpTarget;
     private ExecutorService ioExecutor;
@@ -251,6 +253,7 @@ public final class MainActivity extends Activity {
     private boolean editorHorizontallyScrolling = false;
     private int treePaneWidthDp = TREE_PANE_DEFAULT_DP;
     private FormatTarget lastFormatTarget = FormatTarget.RTF_EDITOR;
+    private ActivePane lastActivePane = ActivePane.RTF_EDITOR;
     private LinearLayout contentLayout;
     private LinearLayout treePane;
     private LinearLayout editorPane;
@@ -262,6 +265,7 @@ public final class MainActivity extends Activity {
     private interface UiCallback<T> { void run(T value); }
 
     private enum FormatTarget { RTF_EDITOR, TREE_NODE }
+    private enum ActivePane { RTF_EDITOR, TREE_NODE, TITLE_TEXT }
 
     private static final class RetainedState {
         NoteDocument document;
@@ -272,11 +276,14 @@ public final class MainActivity extends Activity {
         NoteNode internalClipboardNode;
         LegacySettings settings;
         FtpTarget currentFtpTarget;
+        SpannableStringBuilder internalEditorClipboard;
+        String internalEditorClipboardPlain;
         boolean editorHorizontallyScrolling;
         int selectionStart;
         int selectionEnd;
         int treePaneWidthDp;
         FormatTarget lastFormatTarget;
+        ActivePane lastActivePane;
     }
 
     private static final class RtfTypefaceSpan extends TypefaceSpan {
@@ -332,10 +339,13 @@ public final class MainActivity extends Activity {
             currentRawFile = retained.currentRawFile;
             currentDisplayName = retained.currentDisplayName == null ? "unbenannt.alx" : retained.currentDisplayName;
             internalClipboardNode = retained.internalClipboardNode;
+            internalEditorClipboard = retained.internalEditorClipboard == null ? null : new SpannableStringBuilder(retained.internalEditorClipboard);
+            internalEditorClipboardPlain = retained.internalEditorClipboardPlain == null ? "" : retained.internalEditorClipboardPlain;
             currentFtpTarget = retained.currentFtpTarget;
             settings = retained.settings == null ? AndroidSettingsStore.load(this) : retained.settings;
             editorHorizontallyScrolling = retained.editorHorizontallyScrolling;
             lastFormatTarget = retained.lastFormatTarget == null ? FormatTarget.RTF_EDITOR : retained.lastFormatTarget;
+            lastActivePane = retained.lastActivePane == null ? (lastFormatTarget == FormatTarget.TREE_NODE ? ActivePane.TREE_NODE : ActivePane.RTF_EDITOR) : retained.lastActivePane;
             treePaneWidthDp = retained.treePaneWidthDp > 0 ? LegacySettings.normalizeAndroidTreePaneWidthDp(retained.treePaneWidthDp) : LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
         } else {
             settings = AndroidSettingsStore.load(this);
@@ -375,6 +385,8 @@ public final class MainActivity extends Activity {
         retained.currentRawFile = currentRawFile;
         retained.currentDisplayName = currentDisplayName;
         retained.internalClipboardNode = internalClipboardNode;
+        retained.internalEditorClipboard = internalEditorClipboard == null ? null : new SpannableStringBuilder(internalEditorClipboard);
+        retained.internalEditorClipboardPlain = internalEditorClipboardPlain == null ? "" : internalEditorClipboardPlain;
         retained.settings = settings;
         retained.currentFtpTarget = currentFtpTarget;
         retained.editorHorizontallyScrolling = editorHorizontallyScrolling;
@@ -382,6 +394,7 @@ public final class MainActivity extends Activity {
         retained.selectionEnd = editor == null ? retained.selectionStart : Math.max(retained.selectionStart, editor.getSelectionEnd());
         retained.treePaneWidthDp = currentTreePaneWidthDp();
         retained.lastFormatTarget = lastFormatTarget;
+        retained.lastActivePane = lastActivePane;
         return retained;
     }
 
@@ -422,7 +435,7 @@ public final class MainActivity extends Activity {
         root.addView(toolbarPanel, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout fileToolbar = addToolbarRow(toolbarPanel, "Datei");
-        LinearLayout treeToolbar = addToolbarRow(toolbarPanel, "Baum");
+        LinearLayout treeToolbar = addToolbarRow(toolbarPanel, "Baum/Text");
         LinearLayout textToolbar = addToolbarRow(toolbarPanel, "Text");
 
         addButton(fileToolbar, "Leer", v -> confirmDiscardThen(this::newEmptyDocument));
@@ -467,25 +480,25 @@ public final class MainActivity extends Activity {
         addButton(fileToolbar, "Feedback", v -> showFeedbackDialog());
         addButton(fileToolbar, "Info", v -> showInfo());
 
-        addButton(treeToolbar, "Kind", v -> newChild());
-        addButton(treeToolbar, "Daneben", v -> newNext());
-        addButton(treeToolbar, "Auf/Zu", v -> toggleExpanded());
-        addButton(treeToolbar, "Alle auf", v -> expandAllNodes());
-        addButton(treeToolbar, "Alle zu", v -> collapseAllNodes());
-        addButton(treeToolbar, "Löschen", v -> deleteCurrent());
-        addButton(treeToolbar, "Kopieren", v -> copyCurrentNode(false));
-        addButton(treeToolbar, "Ausschneiden", v -> cutCurrentNode());
-        addButton(treeToolbar, "Einfügen", v -> pasteNode());
-        addButton(treeToolbar, "Rauf", v -> moveCurrentUp());
-        addButton(treeToolbar, "Runter", v -> moveCurrentDown());
-        addButton(treeToolbar, "Einrücken", v -> indentCurrent());
-        addButton(treeToolbar, "Ausrücken", v -> outdentCurrent());
-        addButton(treeToolbar, "Vor Ziel", v -> showMoveBeforeTargetDialog());
-        addButton(treeToolbar, "Haftnotiz", v -> showDesktopNoteDialog());
-        addButton(treeToolbar, "Haft Layout", v -> showDesktopNoteLayout());
-        addButton(treeToolbar, "Haftliste", v -> showDesktopNoteTrayList());
-        addButton(treeToolbar, "Haft weg", v -> clearDesktopNotesInSubtree());
-        addButton(treeToolbar, "Wecker", v -> showAlarmDialog());
+        addButton(treeToolbar, "Kind", v -> newChildForActiveMiddleTarget());
+        addButton(treeToolbar, "Daneben", v -> newNextForActiveMiddleTarget());
+        addButton(treeToolbar, "Auf/Zu", v -> toggleExpandedForActiveMiddleTarget());
+        addButton(treeToolbar, "Alle auf", v -> expandAllForActiveMiddleTarget());
+        addButton(treeToolbar, "Alle zu", v -> collapseAllForActiveMiddleTarget());
+        addButton(treeToolbar, "Löschen", v -> deleteForActiveMiddleTarget());
+        addButton(treeToolbar, "Kopieren", v -> copyForActiveMiddleTarget());
+        addButton(treeToolbar, "Ausschneiden", v -> cutForActiveMiddleTarget());
+        addButton(treeToolbar, "Einfügen", v -> pasteForActiveMiddleTarget());
+        addButton(treeToolbar, "Rauf", v -> moveUpForActiveMiddleTarget());
+        addButton(treeToolbar, "Runter", v -> moveDownForActiveMiddleTarget());
+        addButton(treeToolbar, "Einrücken", v -> indentForActiveMiddleTarget());
+        addButton(treeToolbar, "Ausrücken", v -> outdentForActiveMiddleTarget());
+        addButton(treeToolbar, "Vor Ziel", v -> moveBeforeForActiveMiddleTarget());
+        addButton(treeToolbar, "Haftnotiz", v -> desktopNoteForActiveMiddleTarget());
+        addButton(treeToolbar, "Haft Layout", v -> desktopNoteLayoutForActiveMiddleTarget());
+        addButton(treeToolbar, "Haftliste", v -> desktopNoteTrayForActiveMiddleTarget());
+        addButton(treeToolbar, "Haft weg", v -> clearDesktopNotesForActiveMiddleTarget());
+        addButton(treeToolbar, "Wecker", v -> alarmForActiveMiddleTarget());
 
         addButton(textToolbar, "Datum", v -> insertDateForActiveTarget());
         addButton(textToolbar, "Punkt", v -> insertLegacyBulletForActiveTarget());
@@ -530,7 +543,7 @@ public final class MainActivity extends Activity {
         treeList.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
         treeList.setFocusable(true);
         treeList.setFocusableInTouchMode(true);
-        treeList.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setFormatTarget(FormatTarget.TREE_NODE); });
+        treeList.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setActivePane(ActivePane.TREE_NODE); });
         treeList.setBackground(roundedBackground(Color.WHITE, Color.rgb(220, 225, 232), 8));
         treeList.setDividerHeight(1);
         treeAdapter = new TreeListAdapter(this);
@@ -539,7 +552,7 @@ public final class MainActivity extends Activity {
         treeList.setOnTouchListener((view, event) -> {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                 lastTreeTouchX[0] = event.getX();
-                setFormatTarget(FormatTarget.TREE_NODE);
+                setActivePane(ActivePane.TREE_NODE);
             }
             return false;
         });
@@ -548,10 +561,10 @@ public final class MainActivity extends Activity {
             NoteNode node = row.node;
             int toggleEdge = dp(42 + row.depth * 22);
             if (!node.children.isEmpty() && lastTreeTouchX[0] >= 0f && lastTreeTouchX[0] <= toggleEdge) {
-                setFormatTarget(FormatTarget.TREE_NODE);
+                setActivePane(ActivePane.TREE_NODE);
                 toggleNodeExpanded(node, true);
             } else {
-                setFormatTarget(FormatTarget.TREE_NODE);
+                setActivePane(ActivePane.TREE_NODE);
                 treeList.requestFocus();
                 selectNode(node, false);
             }
@@ -583,8 +596,8 @@ public final class MainActivity extends Activity {
         titleEdit.setTextSize(15f);
         titleEdit.setBackground(roundedBackground(Color.rgb(255, 250, 205), Color.rgb(226, 213, 145), 8));
         titleEdit.setPadding(dp(7), 0, dp(7), 0);
-        titleEdit.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setFormatTarget(FormatTarget.TREE_NODE); });
-        titleEdit.setOnTouchListener((view, event) -> { if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setFormatTarget(FormatTarget.TREE_NODE); return false; });
+        titleEdit.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setActivePane(ActivePane.TITLE_TEXT); });
+        titleEdit.setOnTouchListener((view, event) -> { if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setActivePane(ActivePane.TITLE_TEXT); return false; });
         titleEdit.addTextChangedListener(new SimpleWatcher() {
             @Override public void afterTextChanged(Editable s) {
                 if (loadingEditor || currentNode == null) return;
@@ -606,8 +619,8 @@ public final class MainActivity extends Activity {
         editor.setBackground(roundedBackground(Color.WHITE, Color.rgb(213, 219, 229), 8));
         applyEditorScrollbars();
         editor.setPadding(dp(10), dp(10), dp(10), dp(10));
-        editor.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setFormatTarget(FormatTarget.RTF_EDITOR); });
-        editor.setOnTouchListener((view, event) -> { if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setFormatTarget(FormatTarget.RTF_EDITOR); return false; });
+        editor.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setActivePane(ActivePane.RTF_EDITOR); });
+        editor.setOnTouchListener((view, event) -> { if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setActivePane(ActivePane.RTF_EDITOR); return false; });
         editor.addTextChangedListener(new SimpleWatcher() {
             @Override public void afterTextChanged(Editable s) {
                 if (loadingEditor) return;
@@ -925,7 +938,7 @@ public final class MainActivity extends Activity {
 
     private String toolbarRowGlyph(String label) {
         if ("Datei".equals(label)) return "≡";
-        if ("Baum".equals(label)) return "▦";
+        if ("Baum".equals(label) || "Baum/Text".equals(label)) return "▦";
         if ("Text".equals(label)) return "A";
         return label == null || label.isEmpty() ? "•" : label.substring(0, 1);
     }
@@ -1036,14 +1049,29 @@ public final class MainActivity extends Activity {
     }
 
     private void setFormatTarget(FormatTarget target) {
-        if (target != null) lastFormatTarget = target;
+        if (target == null) return;
+        lastFormatTarget = target;
+        if (target == FormatTarget.RTF_EDITOR) lastActivePane = ActivePane.RTF_EDITOR;
+        else if (lastActivePane == ActivePane.RTF_EDITOR || lastActivePane == null) lastActivePane = ActivePane.TREE_NODE;
+    }
+
+    private void setActivePane(ActivePane pane) {
+        if (pane == null) return;
+        lastActivePane = pane;
+        lastFormatTarget = pane == ActivePane.RTF_EDITOR ? FormatTarget.RTF_EDITOR : FormatTarget.TREE_NODE;
+    }
+
+    private ActivePane activePaneForMiddleToolbar() {
+        if (editor != null && editor.hasFocus()) return ActivePane.RTF_EDITOR;
+        if (titleEdit != null && titleEdit.hasFocus()) return ActivePane.TITLE_TEXT;
+        if (treeList != null && treeList.hasFocus()) return ActivePane.TREE_NODE;
+        if (lastActivePane != null) return lastActivePane;
+        return lastFormatTarget == FormatTarget.TREE_NODE ? ActivePane.TREE_NODE : ActivePane.RTF_EDITOR;
     }
 
     private boolean shouldFormatTreeTarget() {
-        if (editor != null && editor.hasFocus()) return false;
-        if (treeList != null && treeList.hasFocus()) return true;
-        if (titleEdit != null && titleEdit.hasFocus()) return true;
-        return lastFormatTarget == FormatTarget.TREE_NODE;
+        ActivePane active = activePaneForMiddleToolbar();
+        return active == ActivePane.TREE_NODE || active == ActivePane.TITLE_TEXT;
     }
 
     private void markDocumentChanged() {
@@ -1733,6 +1761,8 @@ public final class MainActivity extends Activity {
         saveCurrentEditorToNode();
         try {
             internalClipboardNode = currentNode.cloneDeep(includeDesktopNote);
+            internalEditorClipboard = null;
+            internalEditorClipboardPlain = "";
             String xml = NodeClipboard.nodeToClipboardXml(currentNode, includeDesktopNote);
             ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
             if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText(NodeClipboard.NODE_MIME_TYPE, xml));
@@ -1786,6 +1816,326 @@ public final class MainActivity extends Activity {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private boolean requireTreePaneForMiddleAction(String action) {
+        ActivePane active = activePaneForMiddleToolbar();
+        if (active == ActivePane.TREE_NODE) return true;
+        String prefix = action == null || action.isEmpty() ? "Diese Funktion" : action;
+        if (active == ActivePane.RTF_EDITOR) {
+            status(prefix + " ist eine Baumfunktion. Bitte zuerst den Baum antippen.");
+            toast("Baumfunktion: erst Baum antippen");
+        } else {
+            status(prefix + " ist eine Baumfunktion. Bitte zuerst den Baum statt der Titelzeile antippen.");
+            toast("Baumfunktion: Baum antippen");
+        }
+        return false;
+    }
+
+    private void newChildForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Kind")) return;
+        newChild();
+    }
+
+    private void newNextForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Daneben")) return;
+        newNext();
+    }
+
+    private void toggleExpandedForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Auf/Zu")) return;
+        toggleExpanded();
+    }
+
+    private void expandAllForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Alle auf")) return;
+        expandAllNodes();
+    }
+
+    private void collapseAllForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Alle zu")) return;
+        collapseAllNodes();
+    }
+
+    private void moveUpForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Rauf")) return;
+        moveCurrentUp();
+    }
+
+    private void moveDownForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Runter")) return;
+        moveCurrentDown();
+    }
+
+    private void moveBeforeForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Vor Ziel")) return;
+        showMoveBeforeTargetDialog();
+    }
+
+    private void desktopNoteForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Haftnotiz")) return;
+        showDesktopNoteDialog();
+    }
+
+    private void desktopNoteLayoutForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Haft Layout")) return;
+        showDesktopNoteLayout();
+    }
+
+    private void desktopNoteTrayForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Haftliste")) return;
+        showDesktopNoteTrayList();
+    }
+
+    private void clearDesktopNotesForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Haft weg")) return;
+        clearDesktopNotesInSubtree();
+    }
+
+    private void alarmForActiveMiddleTarget() {
+        if (!requireTreePaneForMiddleAction("Wecker")) return;
+        showAlarmDialog();
+    }
+
+    private void copyForActiveMiddleTarget() {
+        ActivePane active = activePaneForMiddleToolbar();
+        if (active == ActivePane.RTF_EDITOR) {
+            copyEditorSelectionToClipboard(false);
+        } else if (active == ActivePane.TITLE_TEXT) {
+            copyEditTextSelectionToClipboard(titleEdit, false, "Titeltext kopiert");
+        } else {
+            copyCurrentNode(false);
+        }
+    }
+
+    private void cutForActiveMiddleTarget() {
+        ActivePane active = activePaneForMiddleToolbar();
+        if (active == ActivePane.RTF_EDITOR) {
+            copyEditorSelectionToClipboard(true);
+        } else if (active == ActivePane.TITLE_TEXT) {
+            copyEditTextSelectionToClipboard(titleEdit, true, "Titeltext ausgeschnitten");
+        } else {
+            cutCurrentNode();
+        }
+    }
+
+    private void pasteForActiveMiddleTarget() {
+        ActivePane active = activePaneForMiddleToolbar();
+        if (active == ActivePane.RTF_EDITOR) {
+            pasteIntoEditorFromClipboard();
+        } else if (active == ActivePane.TITLE_TEXT) {
+            pasteIntoEditTextFromClipboard(titleEdit, "Titeltext eingefügt");
+        } else {
+            pasteNode();
+        }
+    }
+
+    private void deleteForActiveMiddleTarget() {
+        ActivePane active = activePaneForMiddleToolbar();
+        if (active == ActivePane.RTF_EDITOR) {
+            deleteEditorSelectionOrChar();
+        } else if (active == ActivePane.TITLE_TEXT) {
+            deleteEditTextSelectionOrChar(titleEdit, "Titeltext gelöscht");
+        } else {
+            deleteCurrent();
+        }
+    }
+
+    private void indentForActiveMiddleTarget() {
+        ActivePane active = activePaneForMiddleToolbar();
+        if (active == ActivePane.RTF_EDITOR) {
+            applyEditorParagraphIndent(+1);
+        } else if (active == ActivePane.TREE_NODE) {
+            indentCurrent();
+        } else {
+            status("Einrücken: Titelzeile aktiv. Für Baum erst Baum antippen, für Text den RTF-Editor antippen.");
+            toast("Baum oder RTF-Text antippen");
+        }
+    }
+
+    private void outdentForActiveMiddleTarget() {
+        ActivePane active = activePaneForMiddleToolbar();
+        if (active == ActivePane.RTF_EDITOR) {
+            applyEditorParagraphIndent(-1);
+        } else if (active == ActivePane.TREE_NODE) {
+            outdentCurrent();
+        } else {
+            status("Ausrücken: Titelzeile aktiv. Für Baum erst Baum antippen, für Text den RTF-Editor antippen.");
+            toast("Baum oder RTF-Text antippen");
+        }
+    }
+
+    private int[] editTextSelectionRange(EditText target) {
+        int len = target == null || target.getText() == null ? 0 : target.getText().length();
+        int start = target == null ? 0 : Math.max(0, Math.min(target.getSelectionStart(), len));
+        int end = target == null ? start : Math.max(0, Math.min(target.getSelectionEnd(), len));
+        if (end < start) { int tmp = start; start = end; end = tmp; }
+        return new int[]{start, end};
+    }
+
+    private void copyEditTextSelectionToClipboard(EditText target, boolean cut, String message) {
+        if (target == null || target.getText() == null) return;
+        int[] range = editTextSelectionRange(target);
+        if (range[1] <= range[0]) {
+            toast("Kein Text markiert");
+            return;
+        }
+        Editable editable = target.getText();
+        CharSequence selected = editable.subSequence(range[0], range[1]);
+        setPlainSystemClipboard(selected);
+        internalClipboardNode = null;
+        internalEditorClipboard = null;
+        internalEditorClipboardPlain = "";
+        if (cut) {
+            editable.delete(range[0], range[1]);
+            if (target == titleEdit) {
+                titleDirty = true;
+                markDocumentChanged();
+                rebuildTree();
+                updateTitle();
+            }
+        }
+        status(message == null || message.isEmpty() ? (cut ? "Text ausgeschnitten" : "Text kopiert") : message);
+    }
+
+    private void pasteIntoEditTextFromClipboard(EditText target, String message) {
+        if (target == null || target.getText() == null) return;
+        CharSequence payload = systemClipboardText();
+        if (payload == null) {
+            toast("Zwischenablage enthält keinen Text");
+            return;
+        }
+        int[] range = editTextSelectionRange(target);
+        target.getText().replace(range[0], range[1], payload);
+        int cursor = Math.max(0, Math.min(range[0] + payload.length(), target.getText().length()));
+        target.setSelection(cursor);
+        if (target == titleEdit) {
+            titleDirty = true;
+            markDocumentChanged();
+            rebuildTree();
+            updateTitle();
+        }
+        status(message == null || message.isEmpty() ? "Text eingefügt" : message);
+    }
+
+    private void deleteEditTextSelectionOrChar(EditText target, String message) {
+        if (target == null || target.getText() == null) return;
+        Editable editable = target.getText();
+        int[] range = editTextSelectionRange(target);
+        if (range[1] > range[0]) {
+            editable.delete(range[0], range[1]);
+        } else if (range[0] < editable.length()) {
+            editable.delete(range[0], range[0] + 1);
+        } else {
+            toast("Nichts zu löschen");
+            return;
+        }
+        if (target == titleEdit) {
+            titleDirty = true;
+            markDocumentChanged();
+            rebuildTree();
+            updateTitle();
+        }
+        status(message == null || message.isEmpty() ? "Text gelöscht" : message);
+    }
+
+    private void copyEditorSelectionToClipboard(boolean cut) {
+        if (editor == null || editor.getText() == null) return;
+        int[] range = editorSelectionRange(false);
+        if (range[1] <= range[0]) {
+            toast("Kein RTF-Text markiert");
+            return;
+        }
+        SpannableStringBuilder selected = new SpannableStringBuilder(editor.getText().subSequence(range[0], range[1]));
+        internalClipboardNode = null;
+        internalEditorClipboard = selected;
+        internalEditorClipboardPlain = selected.toString();
+        setPlainSystemClipboard(internalEditorClipboardPlain);
+        if (cut) {
+            editor.getText().delete(range[0], range[1]);
+            markEditorRichChanged("RTF-Text ausgeschnitten");
+        } else {
+            status("RTF-Text kopiert");
+        }
+    }
+
+    private void pasteIntoEditorFromClipboard() {
+        if (editor == null || editor.getText() == null) return;
+        CharSequence systemText = systemClipboardText();
+        CharSequence payload = null;
+        if (internalEditorClipboard != null && internalEditorClipboard.length() > 0) {
+            String systemPlain = systemText == null ? "" : systemText.toString();
+            if (systemPlain.equals(internalEditorClipboardPlain)) payload = new SpannableStringBuilder(internalEditorClipboard);
+        }
+        if (payload == null) payload = systemText;
+        if (payload == null) {
+            toast("Zwischenablage enthält keinen Text");
+            return;
+        }
+        Editable editable = editor.getText();
+        int[] range = editorSelectionRange(false);
+        editable.replace(range[0], range[1], payload);
+        int cursor = Math.max(0, Math.min(range[0] + payload.length(), editable.length()));
+        editor.setSelection(cursor);
+        markEditorRichChanged("RTF-Text eingefügt");
+    }
+
+    private void deleteEditorSelectionOrChar() {
+        if (editor == null || editor.getText() == null) return;
+        Editable editable = editor.getText();
+        int[] range = editorSelectionRange(false);
+        if (range[1] > range[0]) {
+            editable.delete(range[0], range[1]);
+        } else if (range[0] < editable.length()) {
+            editable.delete(range[0], range[0] + 1);
+        } else {
+            toast("Nichts zu löschen");
+            return;
+        }
+        markEditorRichChanged("RTF-Text gelöscht");
+    }
+
+    private void applyEditorParagraphIndent(int direction) {
+        if (editor == null || editor.getText() == null) return;
+        Spannable text = editor.getText();
+        if (text.length() == 0) {
+            toast("Kein RTF-Text vorhanden");
+            return;
+        }
+        int[] selected = editorSelectionRange(true);
+        int[] para = paragraphRange(text.toString(), selected[0], selected[1]);
+        int current = 0;
+        LeadingMarginSpan.Standard[] spans = text.getSpans(para[0], para[1], LeadingMarginSpan.Standard.class);
+        for (LeadingMarginSpan.Standard span : spans) {
+            current = Math.max(current, Math.max(span.getLeadingMargin(true), span.getLeadingMargin(false)));
+        }
+        removeOverlappingSpans(text, para[0], para[1], LeadingMarginSpan.Standard.class);
+        int step = dp(24);
+        int next = Math.max(0, current + (direction < 0 ? -step : step));
+        if (next > 0 && para[1] > para[0]) {
+            text.setSpan(new LeadingMarginSpan.Standard(next, next), para[0], para[1], Spanned.SPAN_PARAGRAPH);
+        }
+        markEditorRichChanged(next > 0 ? "RTF-Absatz eingerückt" : "RTF-Absatzeinzug entfernt");
+    }
+
+    private CharSequence systemClipboardText() {
+        try {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null || !clipboard.hasPrimaryClip()) return null;
+            ClipData clip = clipboard.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return null;
+            CharSequence text = clip.getItemAt(0).coerceToText(this);
+            if (text == null) return null;
+            return text;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void setPlainSystemClipboard(CharSequence text) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        CharSequence safe = text == null ? "" : text;
+        if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("Notizen", safe));
     }
 
     private void moveCurrentUp() {
