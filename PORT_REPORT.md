@@ -435,3 +435,12 @@ Neu hinzugekommen sind `LegacyFontSetModel`, `LegacyWindowMoveResizeModel` und `
 - Nochmaliges Drücken des Markdown-Buttons stellt den ursprünglichen RTF-Editorinhalt wieder her.
 - Speichern während aktiver Markdown-Vorschau überschreibt den Knoten nicht mit Vorschautext; vorhandenes RTF, Formatierungen und Bilder bleiben erhalten.
 - Neue Kernklasse `LegacyMarkdownPreviewModel` mit Rohtextbereinigung, Markdown-Erkennung und Statusmodell.
+
+## v111
+
+- Version erhöht auf `versionCode 111` / `versionName 1.0.111-java-android-nativ`.
+- Baum-Undo/Redo mit eigener Snapshot-Historie ergänzt und an aktive Baumselektion, Kontextmenü und `Ctrl+Z`/`Ctrl+Y` angebunden.
+- Baumaktionen wie Erzeugen, Löschen, Einfügen, Verschieben, Drag/Drop, Ein-/Ausrücken, Expansion, Titeländerung, Baumformatierung, Wecker- und Haftnotiz-Metadaten werden vor der Änderung gesichert.
+- Die Baum-Historie ist von der bestehenden RTF-Undo-Historie getrennt.
+- Samsung-Stift-Eingabe verarbeitet nun Druckwerte pro Stiftpunkt; die Strichbreite ändert sich innerhalb eines Strichs anhand der Druckstärke.
+- Neue Kernklasse `LegacyTreeUndoModel`; `LegacyInkPictureModel` erweitert um `pressureWidthFactor`.

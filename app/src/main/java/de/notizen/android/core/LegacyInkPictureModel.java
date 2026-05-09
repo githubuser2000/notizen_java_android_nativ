@@ -48,6 +48,15 @@ public final class LegacyInkPictureModel {
         return "Stiftbild als RTF-Bild gespeichert (" + safe + " Bytes)";
     }
 
+    public static float pressureWidthFactor(float pressure) {
+        float p = pressure <= 0f ? 1f : pressure;
+        return Math.max(0.45f, Math.min(2.35f, 0.35f + p * 1.65f));
+    }
+
+    public static boolean pressureChangesStrokeWidth(float lightPressure, float hardPressure) {
+        return pressureWidthFactor(hardPressure) > pressureWidthFactor(lightPressure);
+    }
+
     private static int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
     }

@@ -18,7 +18,6 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
@@ -181,6 +180,7 @@ import de.notizen.android.core.LegacyScrollbars;
 import de.notizen.android.core.LegacyTreeDragDrop;
 import de.notizen.android.core.LegacyTreeExpansion;
 import de.notizen.android.core.LegacyTreeLabelEditing;
+import de.notizen.android.core.LegacyTreeUndoModel;
 import de.notizen.android.core.LegacyTreeDelete;
 import de.notizen.android.core.LegacyUnifiedNote;
 import de.notizen.android.core.LegacyDesktopNoteTreeOps;
@@ -205,7 +205,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.110-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.111-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -276,6 +276,8 @@ public final class MainActivity extends Activity {
     private final LegacySearchSession searchSession = new LegacySearchSession();
     private final ArrayList<EditorHistoryEntry> editorUndoStack = new ArrayList<>();
     private final ArrayList<EditorHistoryEntry> editorRedoStack = new ArrayList<>();
+    private final ArrayList<LegacyTreeUndoModel.Snapshot> treeUndoStack = new ArrayList<>();
+    private final ArrayList<LegacyTreeUndoModel.Snapshot> treeRedoStack = new ArrayList<>();
     private final ArrayList<SearchResult> quickSearchResults = new ArrayList<>();
     private int quickSearchIndex = -1;
     private LegacyQuickSearchBar.Scope quickSearchScope = LegacyQuickSearchBar.Scope.CURRENT_SUBTREE;
@@ -326,6 +328,7 @@ public final class MainActivity extends Activity {
     private boolean headerPinchActive = false;
     private boolean editorHistoryRestoring = false;
     private boolean editorHistorySnapshotLocked = false;
+    private boolean treeHistoryRestoring = false;
     private boolean formatToolbarUpdateScheduled = false;
     private boolean markdownPreviewActive = false;
     private NoteNode markdownPreviewNode;
@@ -356,6 +359,8 @@ public final class MainActivity extends Activity {
         FtpTarget currentFtpTarget;
         SpannableStringBuilder internalEditorClipboard;
         String internalEditorClipboardPlain;
+        ArrayList<LegacyTreeUndoModel.Snapshot> treeUndoStack;
+        ArrayList<LegacyTreeUndoModel.Snapshot> treeRedoStack;
         boolean editorHorizontallyScrolling;
         int selectionStart;
         int selectionEnd;
@@ -412,15 +417,28 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private static final class InkStroke {
-        final Path path;
-        final int color;
+    private static final class InkPoint {
+        final float x;
+        final float y;
         final float widthPx;
 
-        InkStroke(Path path, int color, float widthPx) {
-            this.path = path == null ? new Path() : path;
-            this.color = color;
+        InkPoint(float x, float y, float widthPx) {
+            this.x = x;
+            this.y = y;
             this.widthPx = widthPx;
+        }
+    }
+
+    private static final class InkStroke {
+        final ArrayList<InkPoint> points = new ArrayList<>();
+        final int color;
+
+        InkStroke(int color) {
+            this.color = color;
+        }
+
+        void add(float x, float y, float widthPx) {
+            points.add(new InkPoint(x, y, widthPx));
         }
     }
 
@@ -428,9 +446,8 @@ public final class MainActivity extends Activity {
         private final ArrayList<InkStroke> strokes = new ArrayList<>();
         private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
         private final Paint framePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private Path currentPath;
-        private float lastX;
-        private float lastY;
+        private InkStroke currentStroke;
+        private int activePointerId = -1;
         private boolean hasInk = false;
 
         InkCanvasView(Context context) {
@@ -459,19 +476,29 @@ public final class MainActivity extends Activity {
             requestFocus();
             ViewParentDisallow(true);
             int action = event.getActionMasked();
-            float x = event.getX();
-            float y = event.getY();
-            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
-                beginStroke(event, x, y);
+            int actionIndex = Math.max(0, Math.min(event.getActionIndex(), event.getPointerCount() - 1));
+            if (action == MotionEvent.ACTION_DOWN) {
+                beginStroke(event, actionIndex);
+                return true;
+            }
+            if (action == MotionEvent.ACTION_POINTER_DOWN) {
+                if (currentStroke == null) beginStroke(event, actionIndex);
                 return true;
             }
             if (action == MotionEvent.ACTION_MOVE) {
                 continueStroke(event);
                 return true;
             }
-            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_UP) {
-                endStroke(x, y);
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) {
+                if (activePointerId == safePointerId(event, actionIndex)) endStroke(event, actionIndex);
+                if (action == MotionEvent.ACTION_UP) ViewParentDisallow(false);
+                return true;
+            }
+            if (action == MotionEvent.ACTION_CANCEL) {
+                currentStroke = null;
+                activePointerId = -1;
                 ViewParentDisallow(false);
+                invalidate();
                 return true;
             }
             return true;
@@ -484,57 +511,88 @@ public final class MainActivity extends Activity {
             } catch (Exception ignored) {}
         }
 
-        private void beginStroke(MotionEvent event, float x, float y) {
-            currentPath = new Path();
-            currentPath.moveTo(x, y);
-            lastX = x;
-            lastY = y;
-            strokes.add(new InkStroke(currentPath, Color.rgb(18, 24, 35), strokeWidthFor(event)));
+        private void beginStroke(MotionEvent event, int pointerIndex) {
+            if (event == null || pointerIndex < 0 || pointerIndex >= event.getPointerCount()) return;
+            activePointerId = safePointerId(event, pointerIndex);
+            currentStroke = new InkStroke(Color.rgb(18, 24, 35));
+            currentStroke.add(event.getX(pointerIndex), event.getY(pointerIndex), strokeWidthFor(event, pointerIndex, -1));
+            strokes.add(currentStroke);
             hasInk = true;
             invalidate();
         }
 
         private void continueStroke(MotionEvent event) {
-            if (currentPath == null) beginStroke(event, event.getX(), event.getY());
+            if (event == null) return;
+            int pointerIndex = activePointerIndex(event);
+            if (pointerIndex < 0) {
+                if (event.getPointerCount() > 0) beginStroke(event, 0);
+                return;
+            }
+            if (currentStroke == null) beginStroke(event, pointerIndex);
+            if (currentStroke == null) return;
             int history = event.getHistorySize();
-            for (int i = 0; i < history; i++) addPoint(event.getHistoricalX(i), event.getHistoricalY(i));
-            addPoint(event.getX(), event.getY());
+            for (int i = 0; i < history; i++) {
+                currentStroke.add(event.getHistoricalX(pointerIndex, i), event.getHistoricalY(pointerIndex, i), strokeWidthFor(event, pointerIndex, i));
+            }
+            currentStroke.add(event.getX(pointerIndex), event.getY(pointerIndex), strokeWidthFor(event, pointerIndex, -1));
             invalidate();
         }
 
-        private void addPoint(float x, float y) {
-            if (currentPath == null) return;
-            float midX = (lastX + x) / 2f;
-            float midY = (lastY + y) / 2f;
-            currentPath.quadTo(lastX, lastY, midX, midY);
-            lastX = x;
-            lastY = y;
-        }
-
-        private void endStroke(float x, float y) {
-            if (currentPath != null) {
-                currentPath.lineTo(x, y);
-                currentPath = null;
-                invalidate();
+        private void endStroke(MotionEvent event, int pointerIndex) {
+            if (currentStroke != null && event != null && pointerIndex >= 0 && pointerIndex < event.getPointerCount()) {
+                currentStroke.add(event.getX(pointerIndex), event.getY(pointerIndex), strokeWidthFor(event, pointerIndex, -1));
             }
+            currentStroke = null;
+            activePointerId = -1;
+            invalidate();
         }
 
-        private float strokeWidthFor(MotionEvent event) {
+        private int activePointerIndex(MotionEvent event) {
+            if (event == null || event.getPointerCount() <= 0) return -1;
+            if (activePointerId < 0) return 0;
+            int idx = event.findPointerIndex(activePointerId);
+            return idx >= 0 ? idx : 0;
+        }
+
+        private int safePointerId(MotionEvent event, int pointerIndex) {
+            try { return event.getPointerId(pointerIndex); } catch (Exception ignored) { return -1; }
+        }
+
+        private float strokeWidthFor(MotionEvent event, int pointerIndex, int historyIndex) {
             int tool = MotionEvent.TOOL_TYPE_UNKNOWN;
-            try { tool = event.getToolType(0); } catch (Exception ignored) {}
-            float base = tool == MotionEvent.TOOL_TYPE_STYLUS ? dp(3) : dp(4);
+            try { tool = event.getToolType(pointerIndex); } catch (Exception ignored) {}
+            float base = tool == MotionEvent.TOOL_TYPE_STYLUS ? dpf(2.8f) : dpf(4.0f);
             float pressure = 1f;
-            try { pressure = event.getPressure(); } catch (Exception ignored) {}
-            pressure = Math.max(0.65f, Math.min(1.9f, pressure <= 0f ? 1f : pressure));
-            return Math.max(1.5f, base * pressure);
+            try {
+                pressure = historyIndex >= 0 ? event.getHistoricalPressure(pointerIndex, historyIndex) : event.getPressure(pointerIndex);
+            } catch (Exception ignored) {
+                try { pressure = event.getPressure(); } catch (Exception ignoredAgain) { pressure = 1f; }
+            }
+            if (pressure <= 0f) pressure = 1f;
+            // Samsung S-Pen pressure is usually 0..1, but Android may report
+            // values slightly outside that range on some devices.  Keep a
+            // visible minimum and cap extreme spikes so one bad sample does not
+            // create a huge blob.
+            float factor = LegacyInkPictureModel.pressureWidthFactor(pressure);
+            return Math.max(dpf(0.8f), base * factor);
         }
 
         private void drawInk(Canvas canvas) {
             for (InkStroke stroke : strokes) {
-                if (stroke == null || stroke.path == null) continue;
+                if (stroke == null || stroke.points.isEmpty()) continue;
                 strokePaint.setColor(stroke.color);
-                strokePaint.setStrokeWidth(stroke.widthPx);
-                canvas.drawPath(stroke.path, strokePaint);
+                InkPoint previous = null;
+                for (InkPoint point : stroke.points) {
+                    if (point == null) continue;
+                    if (previous == null) {
+                        strokePaint.setStrokeWidth(point.widthPx);
+                        canvas.drawPoint(point.x, point.y, strokePaint);
+                    } else {
+                        strokePaint.setStrokeWidth(Math.max(dpf(0.8f), (previous.widthPx + point.widthPx) / 2f));
+                        canvas.drawLine(previous.x, previous.y, point.x, point.y, strokePaint);
+                    }
+                    previous = point;
+                }
             }
         }
 
@@ -542,7 +600,8 @@ public final class MainActivity extends Activity {
 
         void clearInk() {
             strokes.clear();
-            currentPath = null;
+            currentStroke = null;
+            activePointerId = -1;
             hasInk = false;
             invalidate();
         }
@@ -705,6 +764,7 @@ public final class MainActivity extends Activity {
             internalClipboardNode = retained.internalClipboardNode;
             internalEditorClipboard = retained.internalEditorClipboard == null ? null : new SpannableStringBuilder(retained.internalEditorClipboard);
             internalEditorClipboardPlain = retained.internalEditorClipboardPlain == null ? "" : retained.internalEditorClipboardPlain;
+            restoreTreeHistoryStacks(retained.treeUndoStack, retained.treeRedoStack);
             currentFtpTarget = retained.currentFtpTarget;
             settings = retained.settings == null ? AndroidSettingsStore.load(this) : retained.settings;
             editorHorizontallyScrolling = retained.editorHorizontallyScrolling;
@@ -763,6 +823,8 @@ public final class MainActivity extends Activity {
         retained.internalClipboardNode = internalClipboardNode;
         retained.internalEditorClipboard = internalEditorClipboard == null ? null : new SpannableStringBuilder(internalEditorClipboard);
         retained.internalEditorClipboardPlain = internalEditorClipboardPlain == null ? "" : internalEditorClipboardPlain;
+        retained.treeUndoStack = copyTreeHistoryStack(treeUndoStack);
+        retained.treeRedoStack = copyTreeHistoryStack(treeRedoStack);
         retained.settings = settings;
         retained.currentFtpTarget = currentFtpTarget;
         retained.editorHorizontallyScrolling = editorHorizontallyScrolling;
@@ -1044,6 +1106,9 @@ public final class MainActivity extends Activity {
             return handleHeaderPinchTouch(event);
         });
         titleEdit.addTextChangedListener(new SimpleWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+                if (!loadingEditor && currentNode != null && !titleDirty) pushTreeUndoSnapshot("Knotentitel bearbeiten");
+            }
             @Override public void afterTextChanged(Editable s) {
                 if (loadingEditor || currentNode == null) return;
                 currentNode.title = s.toString().isEmpty() ? "..." : s.toString();
@@ -1900,6 +1965,7 @@ public final class MainActivity extends Activity {
 
     private void toggleNodeExpanded(NoteNode node, boolean showMessage) {
         if (node == null || node.children.isEmpty()) return;
+        pushTreeUndoSnapshot(node.expanded ? "Knoten zuklappen" : "Knoten aufklappen");
         node.expanded = !node.expanded;
         markDocumentChanged();
         rebuildTree();
@@ -2265,6 +2331,7 @@ public final class MainActivity extends Activity {
         titleDirty = false;
         internalEditorClipboard = null;
         internalEditorClipboardPlain = "";
+        clearTreeHistory();
         setFormatTarget(FormatTarget.RTF_EDITOR);
         clearRuntimeSnapshotIfBlankStart();
         loadingEditor = false;
@@ -2894,6 +2961,7 @@ public final class MainActivity extends Activity {
         if (document == null) document = NoteDocument.newDocument();
         if (currentNode == null) currentNode = document.ensureRoot();
         saveCurrentEditorToNode();
+        pushTreeUndoSnapshot("Neuer Unterknoten");
         LegacyTreeCreation.CreationResult result = LegacyTreeCreation.newChild(document, currentNode, "...");
         rebuildTree();
         selectNode(result.node, true);
@@ -2904,6 +2972,7 @@ public final class MainActivity extends Activity {
         if (document == null) document = NoteDocument.newDocument();
         if (currentNode == null) currentNode = document.ensureRoot();
         saveCurrentEditorToNode();
+        pushTreeUndoSnapshot("Neuer Knoten daneben");
         LegacyTreeCreation.CreationResult result = LegacyTreeCreation.newNext(document, currentNode, "...");
         rebuildTree();
         selectNode(result.node, true);
@@ -2921,8 +2990,12 @@ public final class MainActivity extends Activity {
 
     private void expandAllNodes() {
         if (document == null || document.root == null) return;
+        LegacyTreeUndoModel.Snapshot before = captureTreeUndoSnapshot("Alle Knoten aufklappen");
         int changed = LegacyTreeExpansion.expandAll(document.ensureRoot());
-        if (changed > 0) markDocumentChanged();
+        if (changed > 0) {
+            commitTreeUndoSnapshot(before);
+            markDocumentChanged();
+        }
         rebuildTree();
         if (currentNode != null) selectNode(currentNode, true);
         status("Alle Knoten geöffnet");
@@ -2930,8 +3003,12 @@ public final class MainActivity extends Activity {
 
     private void collapseAllNodes() {
         if (document == null || document.root == null) return;
+        LegacyTreeUndoModel.Snapshot before = captureTreeUndoSnapshot("Alle Knoten zuklappen");
         int changed = LegacyTreeExpansion.collapseAll(document.ensureRoot());
-        if (changed > 0) markDocumentChanged();
+        if (changed > 0) {
+            commitTreeUndoSnapshot(before);
+            markDocumentChanged();
+        }
         rebuildTree();
         selectNode(document.ensureRoot(), true);
         status("Alle Knoten geschlossen");
@@ -2939,8 +3016,10 @@ public final class MainActivity extends Activity {
 
     private void clearDesktopNotesInSubtree() {
         if (currentNode == null) return;
+        LegacyTreeUndoModel.Snapshot before = captureTreeUndoSnapshot("Haftnotizen im Teilbaum entfernen");
         LegacyDesktopNoteTreeOps.ClearResult result = LegacyDesktopNoteTreeOps.clearDesktopNotes(currentNode);
         if (result.clearedDesktopNotes > 0) {
+            commitTreeUndoSnapshot(before);
             markDocumentChanged();
             rebuildTree();
             selectNode(currentNode, true);
@@ -2961,6 +3040,7 @@ public final class MainActivity extends Activity {
                         return;
                     }
                     LegacyTreeDelete.DeletePlan p = LegacyTreeDelete.plan(currentNode);
+                    pushTreeUndoSnapshot("Knoten löschen");
                     NoteNode fallback = LegacyTreeDelete.delete(currentNode);
                     markDocumentChanged();
                     rebuildTree();
@@ -2995,6 +3075,7 @@ public final class MainActivity extends Activity {
         }
         copyCurrentNode(false);
         LegacyTreeDelete.DeletePlan p = LegacyTreeDelete.plan(currentNode);
+        pushTreeUndoSnapshot("Knoten ausschneiden");
         NoteNode fallback = LegacyTreeDelete.delete(currentNode);
         markDocumentChanged();
         rebuildTree();
@@ -3011,6 +3092,7 @@ public final class MainActivity extends Activity {
             error("Einfügen", "Die Zwischenablage enthält keinen Notizen-Knoten.");
             return;
         }
+        pushTreeUndoSnapshot("Knoten einfügen");
         NoteNode pasted = NoteTreeOps.legacyPasteClone(source, currentNode);
         ensureAncestorsExpanded(pasted);
         markDocumentChanged();
@@ -3028,12 +3110,14 @@ public final class MainActivity extends Activity {
             error("Einfügen", "Die Zwischenablage enthält keinen Notizen-Knoten.");
             return;
         }
+        LegacyTreeUndoModel.Snapshot before = captureTreeUndoSnapshot("Knoten als Unterknoten einfügen");
         NoteNode pasted = NoteTreeOps.legacyPasteCloneAsLastChild(source, currentNode);
         if (pasted == null) {
             status("Einfügen als Unterknoten nicht möglich");
             return;
         }
         ensureAncestorsExpanded(pasted);
+        commitTreeUndoSnapshot(before);
         markDocumentChanged();
         rebuildTree();
         selectNode(pasted, true);
@@ -3068,6 +3152,7 @@ public final class MainActivity extends Activity {
     private void commitInlineTreeRename(NoteNode node, String candidateTitle) {
         if (node == null) return;
         LegacyTreeLabelEditing.EditResult result = LegacyTreeLabelEditing.commit(node.title, candidateTitle);
+        if (result.changed) pushTreeUndoSnapshot("Knoten umbenennen");
         node.title = result.newTitle;
         if (node == currentNode && titleEdit != null) {
             loadingEditor = true;
@@ -3197,6 +3282,7 @@ public final class MainActivity extends Activity {
             return false;
         }
         saveCurrentEditorToNode();
+        LegacyTreeUndoModel.Snapshot before = captureTreeUndoSnapshot("Knoten per Drag/Drop verschieben");
         NoteNode moved = null;
         String actionText = "verschoben";
         if (target.mode == TreeListAdapter.DropPreview.AS_CHILD) {
@@ -3215,6 +3301,7 @@ public final class MainActivity extends Activity {
             return false;
         }
         ensureAncestorsExpanded(moved);
+        commitTreeUndoSnapshot(before);
         markDocumentChanged();
         rebuildTree();
         selectNode(moved, false);
@@ -3230,6 +3317,8 @@ public final class MainActivity extends Activity {
         if (node != currentNode) selectNode(node, false);
         ArrayList<String> labels = new ArrayList<>();
         ArrayList<ContinueCallback> actions = new ArrayList<>();
+        addMenuAction(labels, actions, "Rückgängig", this::undoTreeChange);
+        addMenuAction(labels, actions, "Wiederholen", this::redoTreeChange);
         addMenuAction(labels, actions, "Neuer Unterknoten", this::newChild);
         addMenuAction(labels, actions, "Neuer Knoten daneben", this::newNext);
         addMenuAction(labels, actions, "Direkt im Baum umbenennen", this::renameCurrentNodeInline);
@@ -3667,6 +3756,7 @@ public final class MainActivity extends Activity {
             status("Knoten ist schon oben");
             return;
         }
+        pushTreeUndoSnapshot("Knoten nach oben verschieben");
         siblings.remove(index);
         siblings.add(index - 1, currentNode);
         markDocumentChanged();
@@ -3683,6 +3773,7 @@ public final class MainActivity extends Activity {
             status("Knoten ist schon unten");
             return;
         }
+        pushTreeUndoSnapshot("Knoten nach unten verschieben");
         siblings.remove(index);
         siblings.add(index + 1, currentNode);
         markDocumentChanged();
@@ -3694,10 +3785,12 @@ public final class MainActivity extends Activity {
     private void indentCurrent() {
         if (currentNode == null) return;
         saveCurrentEditorToNode();
+        LegacyTreeUndoModel.Snapshot before = captureTreeUndoSnapshot("Knoten einrücken");
         if (NoteTreeOps.indentUnderPreviousSibling(currentNode) == null) {
             status("Einrücken hier nicht möglich");
             return;
         }
+        commitTreeUndoSnapshot(before);
         markDocumentChanged();
         rebuildTree();
         selectNode(currentNode, true);
@@ -3707,10 +3800,12 @@ public final class MainActivity extends Activity {
     private void outdentCurrent() {
         if (currentNode == null) return;
         saveCurrentEditorToNode();
+        LegacyTreeUndoModel.Snapshot before = captureTreeUndoSnapshot("Knoten ausrücken");
         if (NoteTreeOps.outdentAfterParent(currentNode) == null) {
             status("Ausrücken hier nicht möglich");
             return;
         }
+        commitTreeUndoSnapshot(before);
         markDocumentChanged();
         rebuildTree();
         selectNode(currentNode, true);
@@ -3740,11 +3835,13 @@ public final class MainActivity extends Activity {
                 .setTitle("Knoten vor Ziel verschieben")
                 .setItems(labels.toArray(new String[0]), (d, which) -> {
                     NoteNode target = targets.get(which);
+                    LegacyTreeUndoModel.Snapshot before = captureTreeUndoSnapshot("Knoten vor Ziel verschieben");
                     if (LegacyTreeDragDrop.moveBefore(currentNode, target, document.ensureRoot()) == null) {
                         status("Dieses Ziel ist nicht gültig");
                         return;
                     }
                     ensureAncestorsExpanded(currentNode);
+                    commitTreeUndoSnapshot(before);
                     markDocumentChanged();
                     rebuildTree();
                     selectNode(currentNode, true);
@@ -3798,6 +3895,7 @@ public final class MainActivity extends Activity {
         saveCurrentEditorToNode();
         String oldTitle = titleEdit == null ? currentNode.title : titleEdit.getText().toString();
         String base = oldTitle == null || oldTitle.trim().isEmpty() || "...".equals(oldTitle.trim()) ? "" : oldTitle.trim();
+        pushTreeUndoSnapshot("Knotentitel ergänzen");
         currentNode.title = LegacyEditorNodeSync.normalizeTitle(base.isEmpty() ? value : base + " " + value);
         loadingEditor = true;
         if (titleEdit != null) {
@@ -3838,6 +3936,7 @@ public final class MainActivity extends Activity {
 
     private void toggleTreeTitleStyle(String style, String enabledMessage, String disabledMessage) {
         if (currentNode == null || style == null || style.isEmpty()) return;
+        pushTreeUndoSnapshot("Baumtext-Stil ändern");
         String raw = currentNode.extraAttrs.get(NODE_TITLE_STYLE_ATTR);
         LinkedHashMap<String, Boolean> values = new LinkedHashMap<>();
         if (raw != null) {
@@ -3861,6 +3960,7 @@ public final class MainActivity extends Activity {
 
     private void clearTreeTextFormatting() {
         if (currentNode == null) return;
+        pushTreeUndoSnapshot("Baumtext-Format löschen");
         currentNode.extraAttrs.remove(NODE_TITLE_STYLE_ATTR);
         currentNode.extraAttrs.remove(NODE_TITLE_FONT_ATTR);
         currentNode.extraAttrs.remove(NODE_TITLE_SIZE_ATTR);
@@ -3882,6 +3982,7 @@ public final class MainActivity extends Activity {
 
     private void applyTreeFontFamily(String family) {
         if (currentNode == null) return;
+        pushTreeUndoSnapshot("Baum-Schriftart ändern");
         currentNode.extraAttrs.put(NODE_TITLE_FONT_ATTR, LegacyRichTextToolbar.normalizeFontFamily(family));
         markTreeTextFormatChanged("Baum-Schriftart gesetzt");
     }
@@ -3937,6 +4038,7 @@ public final class MainActivity extends Activity {
     private void applyTreeFontSize(int size) {
         if (currentNode == null) return;
         int clamped = LegacyRichTextToolbar.normalizeFontSize(size);
+        pushTreeUndoSnapshot("Baum-Schriftgröße ändern");
         currentNode.extraAttrs.put(NODE_TITLE_SIZE_ATTR, Integer.toString(clamped));
         markTreeTextFormatChanged("Baum-Schriftgröße: " + clamped + " pt");
     }
@@ -4513,20 +4615,114 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < start; i++) stack.remove(0);
     }
 
-    private void undoForActiveTarget() {
-        if (shouldFormatTreeTarget()) {
-            toast("Rückgängig ist in dieser Stufe für die RTF-Box umgesetzt. Für Baumänderungen bitte Speichern/Backup nutzen.");
+    private ArrayList<LegacyTreeUndoModel.Snapshot> copyTreeHistoryStack(ArrayList<LegacyTreeUndoModel.Snapshot> source) {
+        ArrayList<LegacyTreeUndoModel.Snapshot> copy = new ArrayList<>();
+        if (source == null) return copy;
+        for (LegacyTreeUndoModel.Snapshot snapshot : source) {
+            if (snapshot != null) copy.add(new LegacyTreeUndoModel.Snapshot(snapshot.root, snapshot.selectedPath, snapshot.reason));
+        }
+        return copy;
+    }
+
+    private void restoreTreeHistoryStacks(ArrayList<LegacyTreeUndoModel.Snapshot> undo, ArrayList<LegacyTreeUndoModel.Snapshot> redo) {
+        treeUndoStack.clear();
+        treeRedoStack.clear();
+        if (undo != null) treeUndoStack.addAll(copyTreeHistoryStack(undo));
+        if (redo != null) treeRedoStack.addAll(copyTreeHistoryStack(redo));
+    }
+
+    private void clearTreeHistory() {
+        treeUndoStack.clear();
+        treeRedoStack.clear();
+    }
+
+    private LegacyTreeUndoModel.Snapshot captureTreeUndoSnapshot(String reason) {
+        if (document == null || treeHistoryRestoring) return null;
+        saveCurrentEditorToNode();
+        return LegacyTreeUndoModel.capture(document, currentNode, reason);
+    }
+
+    private void commitTreeUndoSnapshot(LegacyTreeUndoModel.Snapshot snapshot) {
+        if (snapshot == null || treeHistoryRestoring) return;
+        if (!treeUndoStack.isEmpty() && LegacyTreeUndoModel.sameSnapshot(treeUndoStack.get(treeUndoStack.size() - 1), snapshot)) return;
+        treeUndoStack.add(snapshot);
+        trimTreeHistory(treeUndoStack);
+        treeRedoStack.clear();
+        scheduleFormatToolbarStateUpdate();
+    }
+
+    private void pushTreeUndoSnapshot(String reason) {
+        commitTreeUndoSnapshot(captureTreeUndoSnapshot(reason));
+    }
+
+    private void trimTreeHistory(ArrayList<LegacyTreeUndoModel.Snapshot> stack) {
+        if (stack == null) return;
+        int start = LegacyTreeUndoModel.trimStartIndex(stack.size(), LegacyTreeUndoModel.DEFAULT_LIMIT);
+        if (start <= 0) return;
+        for (int i = 0; i < start; i++) stack.remove(0);
+    }
+
+    private void undoTreeChange() {
+        if (treeUndoStack.isEmpty()) {
+            toast("Keine Baum-Änderung zum Rückgängigmachen.");
             return;
         }
-        undoEditorChange();
+        saveCurrentEditorToNode();
+        LegacyTreeUndoModel.Snapshot current = LegacyTreeUndoModel.capture(document, currentNode, "redo");
+        if (current != null) {
+            treeRedoStack.add(current);
+            trimTreeHistory(treeRedoStack);
+        }
+        LegacyTreeUndoModel.Snapshot snapshot = treeUndoStack.remove(treeUndoStack.size() - 1);
+        restoreTreeHistory(snapshot, "Baum rückgängig");
+    }
+
+    private void redoTreeChange() {
+        if (treeRedoStack.isEmpty()) {
+            toast("Keine Baum-Änderung zum Wiederholen.");
+            return;
+        }
+        saveCurrentEditorToNode();
+        LegacyTreeUndoModel.Snapshot current = LegacyTreeUndoModel.capture(document, currentNode, "undo");
+        if (current != null) {
+            treeUndoStack.add(current);
+            trimTreeHistory(treeUndoStack);
+        }
+        LegacyTreeUndoModel.Snapshot snapshot = treeRedoStack.remove(treeRedoStack.size() - 1);
+        restoreTreeHistory(snapshot, "Baum wiederholt");
+    }
+
+    private void restoreTreeHistory(LegacyTreeUndoModel.Snapshot snapshot, String message) {
+        if (snapshot == null || document == null) return;
+        NoteNode root = snapshot.copyRoot();
+        if (root == null) return;
+        if (markdownPreviewActive) clearMarkdownPreviewState(false);
+        treeHistoryRestoring = true;
+        try {
+            document.root = root;
+            document.markChanged();
+            NoteNode selected = LegacyTreeUndoModel.nodeAtPath(document.ensureRoot(), snapshot.selectedPath);
+            if (selected == null) selected = document.ensureRoot();
+            currentNode = null;
+            rebuildTree();
+            selectNode(selected, false);
+            setActivePane(ActivePane.TREE_NODE);
+            updateTitle();
+            scheduleRuntimeSnapshotSave();
+            toast(message == null || message.isEmpty() ? "Baum-Historie wiederhergestellt" : message);
+        } finally {
+            treeHistoryRestoring = false;
+        }
+    }
+
+    private void undoForActiveTarget() {
+        if (shouldFormatTreeTarget()) undoTreeChange();
+        else undoEditorChange();
     }
 
     private void redoForActiveTarget() {
-        if (shouldFormatTreeTarget()) {
-            toast("Wiederholen ist in dieser Stufe für die RTF-Box umgesetzt.");
-            return;
-        }
-        redoEditorChange();
+        if (shouldFormatTreeTarget()) redoTreeChange();
+        else redoEditorChange();
     }
 
     private void undoEditorChange() {
@@ -4611,7 +4807,7 @@ public final class MainActivity extends Activity {
         box.setPadding(dp(10), dp(2), dp(10), 0);
 
         TextView hint = new TextView(this);
-        hint.setText("Mit Samsung-Stift oder Finger in das weiße Feld schreiben. Beim Einfügen wird die Handschrift als Bild in den RTF-Text gespeichert.");
+        hint.setText("Mit Samsung-Stift oder Finger schreiben. Beim Samsung-Stift wird die Druckstärke ausgewertet: stärkerer Druck zeichnet dicker. Beim Einfügen wird die Handschrift als Bild in den RTF-Text gespeichert.");
         hint.setTextSize(12f);
         hint.setTextColor(Color.rgb(60, 68, 80));
         hint.setPadding(0, 0, 0, dp(6));
@@ -4978,6 +5174,7 @@ public final class MainActivity extends Activity {
             String title = baseNameWithoutExtension(queryDisplayName(uri));
             if (title.trim().isEmpty()) title = "HTML Import";
             NoteNode imported = new NoteNode(title, RtfUtils.htmlToRtf(html));
+            pushTreeUndoSnapshot("HTML als Unterknoten importieren");
             currentNode.addChild(imported);
             currentNode.expanded = true;
             markDocumentChanged();
@@ -5047,6 +5244,7 @@ public final class MainActivity extends Activity {
 
     private void applyNodeColor(boolean background, int argb) {
         if (currentNode == null) return;
+        pushTreeUndoSnapshot(background ? "Baum-Hintergrundfarbe ändern" : "Baum-Textfarbe ändern");
         if (background) currentNode.bgArgb = argb;
         else currentNode.fgArgb = argb;
         markDocumentChanged();
@@ -5109,6 +5307,7 @@ public final class MainActivity extends Activity {
                 .setTitle("Haftnotiz-Metadaten")
                 .setView(box)
                 .setNeutralButton("Entfernen", (d, which) -> {
+                    pushTreeUndoSnapshot("Haftnotiz-Metadaten entfernen");
                     currentNode.desktopNote = null;
                     markDocumentChanged();
                     updateTitle();
@@ -5126,6 +5325,7 @@ public final class MainActivity extends Activity {
                     state.opacity = Math.max(0.05d, Math.min(1.0d, parseDouble(opacity.getText().toString(), 0.85d)));
                     state.argb = parseInt(argb.getText().toString(), LegacyColors.legacyLightColorArgb(null));
                     state.legacySparse = false;
+                    pushTreeUndoSnapshot("Haftnotiz-Metadaten ändern");
                     currentNode.desktopNote = state;
                     markDocumentChanged();
                     updateTitle();
@@ -5219,6 +5419,7 @@ public final class MainActivity extends Activity {
                 .setTitle("Wecker")
                 .setView(box)
                 .setNeutralButton("Löschen", (d, which) -> {
+                    pushTreeUndoSnapshot("Wecker löschen");
                     AndroidAlarmScheduler.cancelNodeAlarm(this, currentNode);
                     AlarmUtils.clearFromNode(currentNode);
                     markDocumentChanged();
@@ -5236,6 +5437,7 @@ public final class MainActivity extends Activity {
                         error(result.title, result.message);
                         return;
                     }
+                    pushTreeUndoSnapshot("Wecker ändern");
                     AndroidAlarmScheduler.cancelNodeAlarm(this, currentNode);
                     AlarmUtils.writeToNode(currentNode, result.spec);
                     markDocumentChanged();
@@ -5772,6 +5974,7 @@ public final class MainActivity extends Activity {
 
     private void finishLoadedDocument(String message) {
         runtimeSnapshotRestored = false;
+        clearTreeHistory();
         currentNode = null;
         rebuildTree();
         selectNode(document.ensureRoot(), false);
@@ -5965,6 +6168,7 @@ public final class MainActivity extends Activity {
     private void createUnifiedNote(LegacyUnifiedNote.Scope scope) {
         if (currentNode == null) return;
         saveCurrentEditorToNode();
+        pushTreeUndoSnapshot(scope == LegacyUnifiedNote.Scope.CURRENT_SUBTREE ? "Teilbaum zusammenfassen" : "Gesamten Baum zusammenfassen");
         LegacyUnifiedNote.UnifiedResult result = LegacyUnifiedNote.attach(document, currentNode, scope);
         rebuildTree();
         selectNode(result.created == null ? currentNode : result.created, true);
@@ -6239,6 +6443,7 @@ public final class MainActivity extends Activity {
         currentRawFile = null;
         currentFtpTarget = null;
         currentDisplayName = reset.displayName;
+        clearTreeHistory();
         editorDirty = false;
         titleDirty = false;
         rebuildTree();
@@ -6605,8 +6810,8 @@ public final class MainActivity extends Activity {
             case "new_document": confirmDiscardThen(this::newDocument); return true;
             case "quit": confirmDiscardThen(this::finish); return true;
             case "search": showSearchDialog(); return true;
-            case "undo": undoEditorChange(); return true;
-            case "redo": redoEditorChange(); return true;
+            case "undo": undoForActiveTarget(); return true;
+            case "redo": redoForActiveTarget(); return true;
             case "rename":
                 if (titleEdit != null) {
                     titleEdit.requestFocus();
@@ -6918,6 +7123,10 @@ public final class MainActivity extends Activity {
                 .setMessage(message == null || message.isEmpty() ? "Unbekannter Fehler." : message)
                 .setPositiveButton("OK", null)
                 .show();
+    }
+
+    private float dpf(float value) {
+        return value * getResources().getDisplayMetrics().density;
     }
 
     private int dp(int value) {

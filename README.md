@@ -440,3 +440,13 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Nochmaliges Drücken des Markdown-Buttons stellt den ursprünglichen RTF-Editorinhalt wieder her.
 - Speichern während aktiver Markdown-Vorschau überschreibt den Knoten nicht mit Vorschautext; vorhandenes RTF, Formatierungen und Bilder bleiben erhalten.
 - Neue Kernklasse `LegacyMarkdownPreviewModel` mit Rohtextbereinigung, Markdown-Erkennung und Statusmodell.
+
+## v111
+
+- Version erhöht auf `versionCode 111` / `versionName 1.0.111-java-android-nativ`.
+- Baum-Undo/Redo ergänzt: bei aktivem Baum wirken `Rückgängig` und `Wiederholen` nicht mehr auf die RTF-Box, sondern auf eine eigene Baum-Historie.
+- Baum-Historie speichert Snapshots vor Knoten anlegen/löschen/ausschneiden/einfügen, Drag-and-Drop, Verschieben, Einrücken/Ausrücken, Auf-/Zuklappen, Alle auf/zu, Umbenennen, Baumformatierung, Knotenfarben, Wecker-/Haftnotiz-Metadaten und Teilbaum-Zusammenfassung.
+- Baum-Langdruckmenü enthält nun ebenfalls `Rückgängig` und `Wiederholen`.
+- Die Historie bleibt bei Tablet-Drehung erhalten und wird beim Öffnen/Neuanlegen einer Datei sauber zurückgesetzt.
+- Stiftfeld erweitert: Samsung-Stift-Druckstärke wird beim Zeichnen ausgewertet; stärkerer Druck erzeugt sichtbar dickere Linien, schwächerer Druck dünnere Linien.
+- Neue Kernklasse `LegacyTreeUndoModel`; `LegacyInkPictureModel` enthält nun ein druckabhängiges Breitenmodell.
