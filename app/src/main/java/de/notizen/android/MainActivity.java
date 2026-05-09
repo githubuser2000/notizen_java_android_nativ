@@ -15,7 +15,10 @@ import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
@@ -56,6 +59,7 @@ import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.AdapterView;
 import android.widget.Button;
@@ -127,6 +131,7 @@ import de.notizen.android.core.LegacySearchDialogModel;
 import de.notizen.android.core.LegacySettingsDialogModel;
 import de.notizen.android.core.LegacyI18n;
 import de.notizen.android.core.LegacyImporters;
+import de.notizen.android.core.LegacyInkPictureModel;
 import de.notizen.android.core.LegacyOpenTarget;
 import de.notizen.android.core.LegacyDocumentTitle;
 import de.notizen.android.core.LegacyDiagnosticReport;
@@ -195,7 +200,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.108-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.109-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -391,6 +396,154 @@ public final class MainActivity extends Activity {
         @Override protected void onSelectionChanged(int selStart, int selEnd) {
             super.onSelectionChanged(selStart, selEnd);
             if (MainActivity.this.editor == this || MainActivity.this.titleEdit == this) scheduleFormatToolbarStateUpdate();
+        }
+    }
+
+    private static final class InkStroke {
+        final Path path;
+        final int color;
+        final float widthPx;
+
+        InkStroke(Path path, int color, float widthPx) {
+            this.path = path == null ? new Path() : path;
+            this.color = color;
+            this.widthPx = widthPx;
+        }
+    }
+
+    private final class InkCanvasView extends View {
+        private final ArrayList<InkStroke> strokes = new ArrayList<>();
+        private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
+        private final Paint framePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private Path currentPath;
+        private float lastX;
+        private float lastY;
+        private boolean hasInk = false;
+
+        InkCanvasView(Context context) {
+            super(context);
+            setBackgroundColor(Color.WHITE);
+            setFocusable(true);
+            setFocusableInTouchMode(true);
+            strokePaint.setStyle(Paint.Style.STROKE);
+            strokePaint.setStrokeCap(Paint.Cap.ROUND);
+            strokePaint.setStrokeJoin(Paint.Join.ROUND);
+            strokePaint.setColor(Color.rgb(18, 24, 35));
+            framePaint.setStyle(Paint.Style.STROKE);
+            framePaint.setStrokeWidth(Math.max(1f, dp(1)));
+            framePaint.setColor(Color.rgb(185, 195, 210));
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            canvas.drawColor(Color.WHITE);
+            drawInk(canvas);
+            canvas.drawRect(0, 0, Math.max(0, getWidth() - 1), Math.max(0, getHeight() - 1), framePaint);
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent event) {
+            if (event == null) return false;
+            requestFocus();
+            ViewParentDisallow(true);
+            int action = event.getActionMasked();
+            float x = event.getX();
+            float y = event.getY();
+            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
+                beginStroke(event, x, y);
+                return true;
+            }
+            if (action == MotionEvent.ACTION_MOVE) {
+                continueStroke(event);
+                return true;
+            }
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_UP) {
+                endStroke(x, y);
+                ViewParentDisallow(false);
+                return true;
+            }
+            return true;
+        }
+
+        private void ViewParentDisallow(boolean disallow) {
+            try {
+                ViewParent parent = getParent();
+                if (parent != null) parent.requestDisallowInterceptTouchEvent(disallow);
+            } catch (Exception ignored) {}
+        }
+
+        private void beginStroke(MotionEvent event, float x, float y) {
+            currentPath = new Path();
+            currentPath.moveTo(x, y);
+            lastX = x;
+            lastY = y;
+            strokes.add(new InkStroke(currentPath, Color.rgb(18, 24, 35), strokeWidthFor(event)));
+            hasInk = true;
+            invalidate();
+        }
+
+        private void continueStroke(MotionEvent event) {
+            if (currentPath == null) beginStroke(event, event.getX(), event.getY());
+            int history = event.getHistorySize();
+            for (int i = 0; i < history; i++) addPoint(event.getHistoricalX(i), event.getHistoricalY(i));
+            addPoint(event.getX(), event.getY());
+            invalidate();
+        }
+
+        private void addPoint(float x, float y) {
+            if (currentPath == null) return;
+            float midX = (lastX + x) / 2f;
+            float midY = (lastY + y) / 2f;
+            currentPath.quadTo(lastX, lastY, midX, midY);
+            lastX = x;
+            lastY = y;
+        }
+
+        private void endStroke(float x, float y) {
+            if (currentPath != null) {
+                currentPath.lineTo(x, y);
+                currentPath = null;
+                invalidate();
+            }
+        }
+
+        private float strokeWidthFor(MotionEvent event) {
+            int tool = MotionEvent.TOOL_TYPE_UNKNOWN;
+            try { tool = event.getToolType(0); } catch (Exception ignored) {}
+            float base = tool == MotionEvent.TOOL_TYPE_STYLUS ? dp(3) : dp(4);
+            float pressure = 1f;
+            try { pressure = event.getPressure(); } catch (Exception ignored) {}
+            pressure = Math.max(0.65f, Math.min(1.9f, pressure <= 0f ? 1f : pressure));
+            return Math.max(1.5f, base * pressure);
+        }
+
+        private void drawInk(Canvas canvas) {
+            for (InkStroke stroke : strokes) {
+                if (stroke == null || stroke.path == null) continue;
+                strokePaint.setColor(stroke.color);
+                strokePaint.setStrokeWidth(stroke.widthPx);
+                canvas.drawPath(stroke.path, strokePaint);
+            }
+        }
+
+        boolean hasInk() { return hasInk && !strokes.isEmpty(); }
+
+        void clearInk() {
+            strokes.clear();
+            currentPath = null;
+            hasInk = false;
+            invalidate();
+        }
+
+        Bitmap renderBitmap() {
+            int width = getWidth() > 8 ? getWidth() : dp(LegacyInkPictureModel.DEFAULT_WIDTH_DP);
+            int height = getHeight() > 8 ? getHeight() : dp(LegacyInkPictureModel.DEFAULT_HEIGHT_DP);
+            width = Math.max(dp(LegacyInkPictureModel.MIN_WIDTH_DP), Math.min(width, dp(LegacyInkPictureModel.MAX_WIDTH_DP)));
+            height = Math.max(dp(LegacyInkPictureModel.MIN_HEIGHT_DP), Math.min(height, dp(LegacyInkPictureModel.MAX_HEIGHT_DP)));
+            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            canvas.drawColor(Color.WHITE);
+            drawInk(canvas);
+            return bitmap;
         }
     }
 
@@ -764,6 +917,7 @@ public final class MainActivity extends Activity {
         addButton(textToolbar, "RTF Format", v -> showRtfFormatDialog());
         addButton(textToolbar, "Scroll", v -> cycleScrollbars());
         addButton(textToolbar, "Bild", v -> insertImage());
+        addButton(textToolbar, "Stift", v -> insertInkDrawing());
         addButton(textToolbar, "RTF Info", v -> showRtfInfoDialog());
         addButton(textToolbar, "HTML Import", v -> importHtmlNote());
         addButton(textToolbar, "TXT Import", v -> importTextIntoCurrent());
@@ -2781,6 +2935,7 @@ public final class MainActivity extends Activity {
         addMenuAction(labels, actions, "Löschen", this::deleteEditorSelectionOrChar);
         addMenuAction(labels, actions, "Alles markieren", this::selectAllEditorText);
         addMenuAction(labels, actions, "Bild einfügen…", this::insertImage);
+        addMenuAction(labels, actions, "Stiftbild einfügen…", this::insertInkDrawing);
         addMenuAction(labels, actions, "Datum einfügen", this::insertDate);
         addMenuAction(labels, actions, "Punkt einfügen", this::insertLegacyBullet);
         addMenuAction(labels, actions, "Normal", () -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_regular")));
@@ -4079,35 +4234,97 @@ public final class MainActivity extends Activity {
         startActivityForResult(intentForDialog(LegacyFileDialogModel.insertImage(currentDialogDirectory())), REQ_INSERT_IMAGE);
     }
 
+    private void insertInkDrawing() {
+        if (currentNode == null || editor == null) return;
+        setActivePane(ActivePane.RTF_EDITOR);
+        final InkCanvasView ink = new InkCanvasView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(10), dp(2), dp(10), 0);
+
+        TextView hint = new TextView(this);
+        hint.setText("Mit Samsung-Stift oder Finger in das weiße Feld schreiben. Beim Einfügen wird die Handschrift als Bild in den RTF-Text gespeichert.");
+        hint.setTextSize(12f);
+        hint.setTextColor(Color.rgb(60, 68, 80));
+        hint.setPadding(0, 0, 0, dp(6));
+        box.addView(hint, new LinearLayout.LayoutParams(-1, -2));
+
+        int screenW = getResources().getDisplayMetrics().widthPixels;
+        int padW = Math.max(dp(LegacyInkPictureModel.MIN_WIDTH_DP), Math.min(screenW - dp(48), dp(LegacyInkPictureModel.DEFAULT_WIDTH_DP)));
+        int padH = Math.max(dp(220), Math.min(getResources().getDisplayMetrics().heightPixels / 2, dp(LegacyInkPictureModel.DEFAULT_HEIGHT_DP)));
+        box.addView(ink, new LinearLayout.LayoutParams(padW, padH));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Stiftbild in RTF einfügen")
+                .setView(box)
+                .setNegativeButton("Abbrechen", null)
+                .setNeutralButton("Leeren", null)
+                .setPositiveButton("Einfügen", null)
+                .create();
+        dialog.setOnShowListener(d -> {
+            Button clear = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+            if (clear != null) clear.setOnClickListener(v -> ink.clearInk());
+            Button insert = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (insert != null) insert.setOnClickListener(v -> {
+                if (!ink.hasInk()) {
+                    Toast.makeText(this, "Das Stiftfeld ist leer.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Bitmap bitmap = null;
+                try {
+                    bitmap = ink.renderBitmap();
+                    PreparedImage prepared = compressBitmapForRtf(bitmap, "Stiftbild eingefügt und als RTF-Bild gespeichert");
+                    if (insertPreparedImageIntoEditor(prepared, "Stiftbild einfügen")) dialog.dismiss();
+                } catch (OutOfMemoryError oom) {
+                    error("Stiftbild einfügen", "Das Stiftbild war zu groß für den verfügbaren Android-Speicher.");
+                } catch (Exception ex) {
+                    error("Stiftbild einfügen", ex.getMessage());
+                } finally {
+                    if (bitmap != null) {
+                        try { bitmap.recycle(); } catch (Exception ignored) {}
+                    }
+                }
+            });
+        });
+        dialog.show();
+    }
+
     private void insertImageFromUri(Uri uri) {
         if (currentNode == null || uri == null || editor == null) return;
         try {
             PreparedImage image = prepareImageForRtf(uri);
-            String rawPicture = RtfUtils.rtfPictureFromImage(image.bytes, image.mimeType);
-            if (rawPicture == null || rawPicture.isEmpty()) {
-                error("Bild einfügen", "Dieses Bildformat kann nicht als ALX/RTF-Bild gespeichert werden. Unterstützt sind PNG, JPEG und BMP. Große oder fremde Formate werden vorher verkleinert und als JPEG gespeichert.");
-                return;
-            }
-            Drawable drawable = imageDrawable(image.bytes, 0, 0);
-            if (drawable == null) {
-                error("Bild einfügen", "Das Bild konnte auch nach Speicher-Schutz nicht dekodiert werden.");
-                return;
-            }
-            Editable editable = editor.getText();
-            Spannable text = editable;
-            pushEditorUndoSnapshot("image");
-            int start = Math.max(0, Math.min(editor.getSelectionStart(), text.length()));
-            int end = Math.max(0, Math.min(editor.getSelectionEnd(), text.length()));
-            if (end < start) { int tmp = start; start = end; end = tmp; }
-            editable.replace(start, end, RTF_IMAGE_CHAR);
-            text.setSpan(new RtfImageSpan(drawable, rawPicture, image.mimeType, image.bytes, 0, 0), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            editor.setSelection(start + 1);
-            markEditorRichChanged(image.note.isEmpty() ? "Bild eingefügt und sichtbar eingebettet" : image.note);
+            insertPreparedImageIntoEditor(image, "Bild einfügen");
         } catch (OutOfMemoryError oom) {
             error("Bild einfügen", "Das Bild ist zu groß für den verfügbaren Android-Speicher. Es wurde nicht eingefügt, damit die Notizen-Datei nicht abstürzt.");
         } catch (Exception e) {
             error("Bild einfügen", e.getMessage());
         }
+    }
+
+    private boolean insertPreparedImageIntoEditor(PreparedImage image, String title) {
+        String errorTitle = title == null || title.isEmpty() ? "Bild einfügen" : title;
+        if (currentNode == null || editor == null || image == null || image.bytes.length == 0) return false;
+        String rawPicture = RtfUtils.rtfPictureFromImage(image.bytes, image.mimeType);
+        if (rawPicture == null || rawPicture.isEmpty()) {
+            error(errorTitle, "Dieses Bildformat kann nicht als ALX/RTF-Bild gespeichert werden. Unterstützt sind PNG, JPEG und BMP. Große oder fremde Formate werden vorher verkleinert und als JPEG gespeichert.");
+            return false;
+        }
+        Drawable drawable = imageDrawable(image.bytes, 0, 0);
+        if (drawable == null) {
+            error(errorTitle, "Das Bild konnte auch nach Speicher-Schutz nicht dekodiert werden.");
+            return false;
+        }
+        Editable editable = editor.getText();
+        Spannable text = editable;
+        pushEditorUndoSnapshot("image");
+        int start = Math.max(0, Math.min(editor.getSelectionStart(), text.length()));
+        int end = Math.max(0, Math.min(editor.getSelectionEnd(), text.length()));
+        if (end < start) { int tmp = start; start = end; end = tmp; }
+        editable.replace(start, end, RTF_IMAGE_CHAR);
+        text.setSpan(new RtfImageSpan(drawable, rawPicture, image.mimeType, image.bytes, 0, 0), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        editor.setSelection(start + 1);
+        markEditorRichChanged(image.note.isEmpty() ? "Bild eingefügt und sichtbar eingebettet" : image.note);
+        return true;
     }
 
 
@@ -4471,16 +4688,10 @@ public final class MainActivity extends Activity {
 
     private void requestAndroidWidgetForCurrentNode() {
         if (currentNode == null) return;
-        String title = safeTitle(currentNode);
-        String text = RtfUtils.rtfToPlainText(currentNode.rtf == null ? "" : currentNode.rtf);
-        int bg = Color.rgb(255, 250, 205);
-        int fg = Color.rgb(30, 30, 30);
-        if (currentNode.desktopNote != null && currentNode.desktopNote.argb != null) bg = 0xff000000 | (currentNode.desktopNote.argb & 0x00ffffff);
-        else if (currentNode.bgArgb != 0) bg = 0xff000000 | (currentNode.bgArgb & 0x00ffffff);
-        if (currentNode.fgArgb != 0) fg = 0xff000000 | (currentNode.fgArgb & 0x00ffffff);
-        String path = nodeIndexPath(currentNode);
+        saveCurrentEditorToNode();
         float textSp = settings == null ? 13f : LegacySettings.normalizeAndroidWidgetTextSp(settings.androidWidgetTextSp);
-        NoteWidgetProvider.requestPinOrUpdate(this, path, currentDisplayName, title, text, bg, fg, textSp);
+        LegacyAndroidWidgetRegistry.WidgetSpec spec = LegacyAndroidWidgetRegistry.fromNode(0, document, currentNode, currentDisplayName, textSp);
+        NoteWidgetProvider.requestPinOrUpdate(this, spec.nodePath, spec.documentName, spec.title, spec.text, spec.bgArgb, spec.fgArgb, spec.textSizeSp, spec.images, spec.originalImageCount);
     }
 
     private void updateAndroidWidgetsFromDocument() {

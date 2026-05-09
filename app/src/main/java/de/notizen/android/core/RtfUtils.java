@@ -109,8 +109,55 @@ public final class RtfUtils {
         return images;
     }
 
+    /**
+     * Extract only a small preview-safe subset of embedded RTF images.
+     * This is used by Android widgets, where loading several multi-megabyte
+     * picture groups on the UI path could otherwise make the app unstable.
+     */
+    public static List<RtfImage> extractImagesLimited(String rtf, int maxImages, int maxBytesEach, int maxTotalBytes) {
+        ArrayList<RtfImage> images = new ArrayList<>();
+        if (rtf == null || rtf.isEmpty() || maxImages <= 0 || maxBytesEach <= 0 || maxTotalBytes <= 0) return images;
+        int total = 0;
+        int i = 0;
+        while (i < rtf.length() && images.size() < maxImages && total < maxTotalBytes) {
+            SpecialGroup group = specialGroupAt(rtf, i);
+            if (group != null && group.kind == SpecialKind.PICT) {
+                String pict = group.pictGroup == null ? group.raw : group.pictGroup;
+                int estimate = estimatePictPayloadBytes(pict, Math.min(maxBytesEach, maxTotalBytes - total) + 1);
+                if (estimate > 0 && estimate <= maxBytesEach && total + estimate <= maxTotalBytes) {
+                    RtfImage image = parsePictGroup(pict);
+                    if (image != null && image.data.length <= maxBytesEach && total + image.data.length <= maxTotalBytes) {
+                        images.add(image);
+                        total += image.data.length;
+                    }
+                }
+                i = group.end + 1;
+            } else {
+                i++;
+            }
+        }
+        return images;
+    }
+
     public static int countImages(String rtf) {
         return extractImages(rtf).size();
+    }
+
+    /** Count embedded RTF picture groups without decoding their hex payload. */
+    public static int countImageGroups(String rtf) {
+        if (rtf == null || rtf.isEmpty()) return 0;
+        int count = 0;
+        int i = 0;
+        while (i < rtf.length()) {
+            SpecialGroup group = specialGroupAt(rtf, i);
+            if (group != null && group.kind == SpecialKind.PICT) {
+                count++;
+                i = group.end + 1;
+            } else {
+                i++;
+            }
+        }
+        return count;
     }
 
     /**
@@ -755,6 +802,29 @@ public final class RtfUtils {
         if (bytes.length >= 3 && (bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xd8 && (bytes[2] & 0xff) == 0xff) return "image/jpeg";
         if (bytes.length >= 2 && bytes[0] == 'B' && bytes[1] == 'M') return "image/bmp";
         return s;
+    }
+
+    private static int estimatePictPayloadBytes(String group, int stopAboveBytes) {
+        if (group == null || group.isEmpty()) return 0;
+        int hexDigits = 0;
+        int stopDigits = Math.max(2, stopAboveBytes * 2);
+        boolean inControl = false;
+        for (int i = 0; i < group.length(); i++) {
+            char c = group.charAt(i);
+            if (c == '\\') {
+                inControl = true;
+                continue;
+            }
+            if (inControl) {
+                if (Character.isWhitespace(c) || c == '\r' || c == '\n' || c == ';' || c == '}' || c == '{') inControl = false;
+                continue;
+            }
+            if (Character.digit(c, 16) >= 0) {
+                hexDigits++;
+                if (hexDigits > stopDigits) return stopAboveBytes + 1;
+            }
+        }
+        return hexDigits / 2;
     }
 
     public static String bytesToHex(byte[] data) {

@@ -15,8 +15,21 @@ import java.util.Locale;
 public final class LegacyAndroidWidgetRegistry {
     public static final int DEFAULT_BG = 0xfffffacd;
     public static final int DEFAULT_FG = 0xff202020;
+    public static final int MAX_WIDGET_RTF_IMAGES = 4;
+    public static final int MAX_WIDGET_SOURCE_IMAGE_BYTES = 4 * 1024 * 1024;
+    public static final int MAX_WIDGET_TOTAL_IMAGE_BYTES = 7 * 1024 * 1024;
 
     private LegacyAndroidWidgetRegistry() {}
+
+    public static final class WidgetImage {
+        public final String mimeType;
+        public final byte[] data;
+
+        public WidgetImage(String mimeType, byte[] data) {
+            this.mimeType = mimeType == null ? "" : mimeType;
+            this.data = data == null ? new byte[0] : data;
+        }
+    }
 
     public static final class WidgetSpec {
         public final int widgetId;
@@ -27,8 +40,14 @@ public final class LegacyAndroidWidgetRegistry {
         public final int bgArgb;
         public final int fgArgb;
         public final float textSizeSp;
+        public final List<WidgetImage> images;
+        public final int originalImageCount;
 
         public WidgetSpec(int widgetId, String documentName, String nodePath, String title, String text, int bgArgb, int fgArgb, float textSizeSp) {
+            this(widgetId, documentName, nodePath, title, text, bgArgb, fgArgb, textSizeSp, null, 0);
+        }
+
+        public WidgetSpec(int widgetId, String documentName, String nodePath, String title, String text, int bgArgb, int fgArgb, float textSizeSp, List<WidgetImage> images, int originalImageCount) {
             this.widgetId = widgetId;
             this.documentName = documentName == null ? "" : documentName;
             this.nodePath = nodePath == null ? "" : nodePath;
@@ -37,10 +56,13 @@ public final class LegacyAndroidWidgetRegistry {
             this.bgArgb = forceOpaque(bgArgb == 0 ? DEFAULT_BG : bgArgb);
             this.fgArgb = forceOpaque(fgArgb == 0 ? DEFAULT_FG : fgArgb);
             this.textSizeSp = normalizeWidgetTextSp(textSizeSp);
+            this.images = copyImages(images);
+            this.originalImageCount = Math.max(originalImageCount, this.images.size());
         }
 
         public String summary() {
-            return "#" + widgetId + " " + title + " [" + (nodePath.isEmpty() ? "root" : nodePath) + "] " + text.length() + " Zeichen";
+            String imagePart = originalImageCount <= 0 ? "" : ", " + originalImageCount + " Bild" + (originalImageCount == 1 ? "" : "er");
+            return "#" + widgetId + " " + title + " [" + (nodePath.isEmpty() ? "root" : nodePath) + "] " + text.length() + " Zeichen" + imagePart;
         }
     }
 
@@ -54,7 +76,12 @@ public final class LegacyAndroidWidgetRegistry {
         NoteNode node = nodeByIndexPath(document == null ? null : document.root, nodePath);
         if (node == null && document != null) node = document.ensureRoot();
         String title = node == null ? "Notiz" : cleanTitle(node.title);
-        String text = node == null ? "" : RtfUtils.rtfToPlainText(node.rtf == null ? "" : node.rtf).trim();
+        String rtf = node == null ? "" : (node.rtf == null ? "" : node.rtf);
+        int imageCount = RtfUtils.countImageGroups(rtf);
+        String text = RtfUtils.rtfToPlainText(rtf).trim();
+        if (imageCount > 0) text = text.replace(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, "").trim();
+        List<RtfUtils.RtfImage> rtfImages = RtfUtils.extractImagesLimited(rtf, MAX_WIDGET_RTF_IMAGES, MAX_WIDGET_SOURCE_IMAGE_BYTES, MAX_WIDGET_TOTAL_IMAGE_BYTES);
+        List<WidgetImage> previewImages = previewImagesFromRtf(rtfImages);
         int bg = DEFAULT_BG;
         int fg = DEFAULT_FG;
         if (node != null) {
@@ -62,7 +89,7 @@ public final class LegacyAndroidWidgetRegistry {
             else if (node.bgArgb != 0) bg = forceOpaque(node.bgArgb);
             if (node.fgArgb != 0) fg = forceOpaque(node.fgArgb);
         }
-        return new WidgetSpec(widgetId, documentName, nodePath == null ? "" : nodePath.trim(), title, text, bg, fg, textSizeSp);
+        return new WidgetSpec(widgetId, documentName, nodePath == null ? "" : nodePath.trim(), title, text, bg, fg, textSizeSp, previewImages, imageCount);
     }
 
     public static List<WidgetSpec> refreshExisting(NoteDocument document, String documentName, List<WidgetSpec> existing, float fallbackTextSizeSp) {
@@ -135,5 +162,33 @@ public final class LegacyAndroidWidgetRegistry {
 
     public static String shortColor(int argb) {
         return String.format(Locale.ROOT, "#%06x", argb & 0x00ffffff);
+    }
+
+    private static List<WidgetImage> previewImagesFromRtf(List<RtfUtils.RtfImage> images) {
+        ArrayList<WidgetImage> out = new ArrayList<>();
+        if (images == null || images.isEmpty()) return out;
+        int total = 0;
+        for (RtfUtils.RtfImage image : images) {
+            if (image == null || image.data == null || image.data.length == 0) continue;
+            if (out.size() >= MAX_WIDGET_RTF_IMAGES) break;
+            if (image.data.length > MAX_WIDGET_SOURCE_IMAGE_BYTES) continue;
+            if (total + image.data.length > MAX_WIDGET_TOTAL_IMAGE_BYTES) break;
+            out.add(new WidgetImage(image.mimeType, image.data));
+            total += image.data.length;
+        }
+        return out;
+    }
+
+    private static List<WidgetImage> copyImages(List<WidgetImage> images) {
+        ArrayList<WidgetImage> out = new ArrayList<>();
+        if (images == null) return out;
+        for (WidgetImage image : images) {
+            if (image == null || image.data == null || image.data.length == 0) continue;
+            byte[] copy = new byte[image.data.length];
+            System.arraycopy(image.data, 0, copy, 0, image.data.length);
+            out.add(new WidgetImage(image.mimeType, copy));
+            if (out.size() >= MAX_WIDGET_RTF_IMAGES) break;
+        }
+        return out;
     }
 }

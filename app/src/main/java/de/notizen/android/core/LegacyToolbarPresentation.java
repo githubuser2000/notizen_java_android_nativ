@@ -94,6 +94,7 @@ public final class LegacyToolbarPresentation {
         put(m, "RTF Format", "rtf_format", "RTF-Formatierung anwenden", "✎", "", "font");
         put(m, "Scroll", "cycle_scrollbars", "Scrollleisten wechseln", "↕", "", "font");
         put(m, "Bild", "insert_image", "Bild einfügen", "▧", "", "font");
+        put(m, "Stift", "insert_ink_picture", "Stiftbild schreiben und als RTF-Bild einfügen", "✍", "", "font");
         put(m, "Vorschau", "preview", "HTML-/RTF-Vorschau", "👁", "", "haupt");
         put(m, "RTF Info", "rtf_info", "RTF-Metriken anzeigen", "iR", "", "haupt");
         put(m, "Drucken", "print", "Drucken", "⎙", "Ctrl+P", "haupt");
