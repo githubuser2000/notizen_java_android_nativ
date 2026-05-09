@@ -1,0 +1,21 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'de.notizen.android'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'de.notizen.android'
+        minSdk 23
+        targetSdk 34
+        versionCode 96
+        versionName '1.0.96-java-native'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
