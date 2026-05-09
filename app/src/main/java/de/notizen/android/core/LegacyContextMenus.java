@@ -59,6 +59,22 @@ public final class LegacyContextMenus {
         editor.add(new MenuItemSpec(MenuKind.EDITOR, 4, "Datum einfügen", "Datum einfügen", "editor_insert_date", false, false));
         editor.add(new MenuItemSpec(MenuKind.EDITOR, 5, "Löschen", "Löschen", "editor_delete_selection", false, false));
         editor.add(new MenuItemSpec(MenuKind.EDITOR, 6, "Suchen", "Suchen", "editor_search", false, true));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 7, "Rückgängig", "Rückgängig", "editor_undo", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 8, "Wiederholen", "Wiederholen", "editor_redo", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 9, "Alles markieren", "Alles markieren", "editor_select_all", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 10, "Normal", "Normal", "editor_format_regular", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 11, "Fett", "Fett", "editor_format_bold", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 12, "Kursiv", "Kursiv", "editor_format_italic", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 13, "Unterstrichen", "Unterstrichen", "editor_format_underline", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 14, "Durchgestrichen", "Durchgestrichen", "editor_format_strike", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 15, "Schriftfarbe", "Textfarbe", "editor_text_color", false, true));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 16, "Hintergrund", "Hintergrund", "editor_highlight_color", false, true));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 17, "Schriftart", "Schriftart", "editor_font_family", false, true));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 18, "Schriftgröße", "Schriftgröße", "editor_font_size", false, true));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 19, "Linksbündig", "Linksbündig", "editor_align_left", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 20, "Zentriert", "Zentriert", "editor_align_center", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 21, "Rechtsbündig", "Rechtsbündig", "editor_align_right", false, false));
+        editor.add(new MenuItemSpec(MenuKind.EDITOR, 22, "Blocksatz", "Blocksatz", "editor_align_justify", false, false));
         EDITOR_ITEMS = Collections.unmodifiableList(editor);
 
         ArrayList<MenuItemSpec> tree = new ArrayList<>();
@@ -73,6 +89,17 @@ public final class LegacyContextMenus {
         tree.add(new MenuItemSpec(MenuKind.TREE, 8, "Haft-Notiz", "Haft-Notiz", "tree_desktop_note", true, true));
         tree.add(new MenuItemSpec(MenuKind.TREE, 9, "Hintergrundfarbe", "Hintergrundfarbe", "tree_background_color", true, true));
         tree.add(new MenuItemSpec(MenuKind.TREE, 10, "Schriftfarbe", "Schriftfarbe", "tree_foreground_color", true, true));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 11, "Einfuegen als Unterknoten", "Einfügen als Unterknoten", "tree_paste_as_child", true, false));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 12, "Auf/Zu", "Auf/Zu", "tree_toggle_expand", true, false));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 13, "Alle auf", "Alle aufklappen", "tree_expand_all", true, false));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 14, "Alle zu", "Alle zuklappen", "tree_collapse_all", true, false));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 15, "Rauf", "Nach oben", "tree_move_up", true, false));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 16, "Runter", "Nach unten", "tree_move_down", true, false));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 17, "Einrücken", "Einrücken", "tree_indent", true, false));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 18, "Ausrücken", "Ausrücken", "tree_outdent", true, false));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 19, "Vor Ziel", "Vor Ziel verschieben", "tree_move_before_target", true, true));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 20, "Wecker", "Wecker", "tree_alarm", true, true));
+        tree.add(new MenuItemSpec(MenuKind.TREE, 21, "Teilbaum", "Teilbaum zusammenfassen", "tree_unified_subtree", true, false));
         TREE_ITEMS = Collections.unmodifiableList(tree);
 
         LinkedHashMap<String, MenuItemSpec> byAction = new LinkedHashMap<>();

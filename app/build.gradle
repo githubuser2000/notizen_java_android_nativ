@@ -10,8 +10,8 @@ android {
         applicationId 'de.notizen.android'
         minSdk 23
         targetSdk 34
-        versionCode 106
-        versionName '1.0.106-java-android-nativ'
+        versionCode 107
+        versionName '1.0.107-java-android-nativ'
     }
 
     compileOptions {

@@ -394,3 +394,15 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Treffer springen den passenden Baumknoten an, öffnen dessen Vorfahren und markieren die Fundstelle im Titel oder in der RTF-Box.
 - Die Suchleisten-Einstellung wird bei Drehung im Aktivitätszustand erhalten.
 - Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
+
+## v107
+
+- Version erhöht auf `versionCode 107` / `versionName 1.0.107-java-android-nativ`.
+- Android-Langdruckmenüs ergänzt: Baum und RTF-Box haben jetzt eigene Kontextmenüs mit Desktop-/PyQt-nahen Aktionen.
+- Baum-Kontextmenü enthält unter anderem Neuer Unterknoten, Neuer Knoten daneben, Direkt umbenennen, Kopieren, Ausschneiden, Einfügen, Einfügen als Unterknoten, Löschen, Auf/Zu, Alle auf/zu, Rauf/Runter, Einrücken/Ausrücken, Vor Ziel, Haftnotiz/Widget, Wecker, Knotenfarben und Exportaktionen.
+- RTF-Kontextmenü enthält Rückgängig/Wiederholen, Ausschneiden/Kopieren/Einfügen, Alles markieren, Bild/Datum/Punkt einfügen, Normal/Fett/Kursiv/Unterstrichen/Durchgestrichen, Farben, Schriftart/-größe und Absatz-Ausrichtung.
+- Baumknoten können per Langdruck im Baum direkt umbenannt werden; die alte Notizen-.NET-Fallback-Regel setzt leere Titel weiter auf `...`.
+- Finger-Drag/Drop für Baumknoten ergänzt: langer Druck im linken Griffbereich startet Ziehen; Drop oben verschiebt vor Ziel, Mitte als Unterknoten, unten nach Ziel.
+- Aktiver Bereich wird sichtbarer markiert: Baum, Titelzeile und RTF-Box bekommen klarere aktive Rahmen; der Baumadapter kennt aktive Auswahl und Drop-Vorschau.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
+

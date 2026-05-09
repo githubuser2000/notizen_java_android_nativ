@@ -68,6 +68,51 @@ public final class NoteTreeOps {
     }
 
 
+
+    public static boolean canMoveAfterTarget(NoteNode source, NoteNode target) {
+        if (source == null || target == null) return false;
+        if (source == target) return false;
+        if (source.parent == null) return false;
+        if (target.parent == null) return false;
+        return !source.isAncestorOf(target);
+    }
+
+    public static NoteNode legacyMoveAfterTarget(NoteNode source, NoteNode target) {
+        if (!canMoveAfterTarget(source, target)) return null;
+        NoteNode oldParent = source.parent;
+        NoteNode newParent = target.parent;
+        int oldIndex = oldParent.children.indexOf(source);
+        int targetIndex = newParent.children.indexOf(target);
+        oldParent.children.remove(oldIndex);
+        if (oldParent == newParent && oldIndex < targetIndex) targetIndex--;
+        source.parent = null;
+        newParent.insertChild(targetIndex + 1, source);
+        return source;
+    }
+
+    public static boolean canMoveAsLastChild(NoteNode source, NoteNode target) {
+        if (source == null || target == null) return false;
+        if (source == target) return false;
+        if (source.parent == null) return false;
+        return !source.isAncestorOf(target);
+    }
+
+    public static NoteNode legacyMoveAsLastChild(NoteNode source, NoteNode target) {
+        if (!canMoveAsLastChild(source, target)) return null;
+        source.removeFromParent();
+        target.addChild(source);
+        target.expanded = true;
+        return source;
+    }
+
+    public static NoteNode legacyPasteCloneAsLastChild(NoteNode source, NoteNode selected) {
+        if (source == null || selected == null) return null;
+        NoteNode pasted = source.cloneDeep(false);
+        selected.addChild(pasted);
+        selected.expanded = true;
+        return pasted;
+    }
+
     public static boolean canIndentUnderPreviousSibling(NoteNode node) {
         return node != null && node.parent != null && node.indexInParent() > 0;
     }

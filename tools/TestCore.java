@@ -69,6 +69,7 @@ public final class TestCore {
         testAndroidV104TouchZoomAndImageSafety();
         testAndroidV105ToolbarZoomStability();
         testAndroidV106RtfToolbarAndQuickSearch();
+        testAndroidV107ContextMenusAndTreeDragDrop();
         System.out.println("Core tests OK");
         System.exit(0);
     }
@@ -944,8 +945,8 @@ public final class TestCore {
         if (!" 7.5.2026 4:5 ".equals(legacyDate)) throw new AssertionError("legacy date insert failed: " + legacyDate);
         if (!"\n•   ".equals(LegacyEditorActions.androidBulletInsertText())) throw new AssertionError("android bullet regressed");
 
-        if (LegacyContextMenus.editorItems().size() != 7 || LegacyContextMenus.treeItems().size() != 11) {
-            throw new AssertionError("context menu item counts failed");
+        if (LegacyContextMenus.editorItems().size() != 23 || LegacyContextMenus.treeItems().size() != 22) {
+            throw new AssertionError("context menu item counts failed: " + LegacyContextMenus.editorItems().size() + "/" + LegacyContextMenus.treeItems().size());
         }
         if (!"editor_insert_date".equals(LegacyContextMenus.byLegacyIndex(LegacyContextMenus.MenuKind.EDITOR, 4).action)) {
             throw new AssertionError("editor date context action failed");
@@ -1188,7 +1189,7 @@ public final class TestCore {
         if (!termux.isFile()) termux = new File("../tools/notizen-build-apk-termux.sh");
         if (termux.isFile()) {
             String script = readUtf8File(termux);
-            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"") || !script.contains("-sourcepath \"$JAVA_SRC:$BUILD_DIR/gen\"")) throw new AssertionError("termux sourcepath/version failed");
+            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"") || !script.contains("-sourcepath \"$JAVA_SRC:$BUILD_DIR/gen\"")) throw new AssertionError("termux sourcepath/version failed");
         }
     }
 
@@ -1322,13 +1323,13 @@ public final class TestCore {
         if (!source.isFile()) source = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
         if (source.isFile()) {
             String text = readUtf8File(source);
-            if (!text.contains("showRtfInfoDialog") || !text.contains("LegacyRichTextBoxSemantics.decorateHtmlDocument") || !text.contains("1.0.106-java-android-nativ")) throw new AssertionError("v35 Android bridge missing");
+            if (!text.contains("showRtfInfoDialog") || !text.contains("LegacyRichTextBoxSemantics.decorateHtmlDocument") || !text.contains("1.0.107-java-android-nativ")) throw new AssertionError("v35 Android bridge missing");
         }
         File termux = new File("tools/notizen-build-apk-termux.sh");
         if (!termux.isFile()) termux = new File("../tools/notizen-build-apk-termux.sh");
         if (termux.isFile()) {
             String script = readUtf8File(termux);
-            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"") || !script.contains("1.0.106-java-android-nativ")) throw new AssertionError("termux v35 version failed");
+            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"") || !script.contains("1.0.107-java-android-nativ")) throw new AssertionError("termux v35 version failed");
         }
     }
 
@@ -1380,8 +1381,8 @@ public final class TestCore {
         doc.root.rtf = RtfUtils.plainTextToRtf("secret diagnostic text");
         doc.root.addChild(new NoteNode("child", RtfUtils.plainTextToRtf("other")));
         doc.markChanged();
-        String report = LegacyDiagnosticReport.build(doc, doc.root, unsaved, settings, "1.0.106-java-android-nativ");
-        if (!report.contains("Version: 1.0.106-java-android-nativ") || !report.contains("Knoten: 2") || !report.contains("Geändert: ja") || !report.contains("Hinweis")) throw new AssertionError("diagnostic report failed: " + report);
+        String report = LegacyDiagnosticReport.build(doc, doc.root, unsaved, settings, "1.0.107-java-android-nativ");
+        if (!report.contains("Version: 1.0.107-java-android-nativ") || !report.contains("Knoten: 2") || !report.contains("Geändert: ja") || !report.contains("Hinweis")) throw new AssertionError("diagnostic report failed: " + report);
         if (report.contains("secret diagnostic text")) throw new AssertionError("diagnostic report leaked note text");
         if (!"diagnostics".equals(LegacyToolbarPresentation.forLabel("Diagnose").action)) throw new AssertionError("diagnose toolbar mapping failed");
 
@@ -1389,13 +1390,13 @@ public final class TestCore {
         if (!source.isFile()) source = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
         if (source.isFile()) {
             String text = readUtf8File(source);
-            if (!text.contains("showDiagnostics") || !text.contains("LegacyRecentMenu.labelsFromPaths") || !text.contains("LegacyDocumentTitle.build") || !text.contains("1.0.106-java-android-nativ")) throw new AssertionError("v35 Android bridge missing");
+            if (!text.contains("showDiagnostics") || !text.contains("LegacyRecentMenu.labelsFromPaths") || !text.contains("LegacyDocumentTitle.build") || !text.contains("1.0.107-java-android-nativ")) throw new AssertionError("v35 Android bridge missing");
         }
         File termux = new File("tools/notizen-build-apk-termux.sh");
         if (!termux.isFile()) termux = new File("../tools/notizen-build-apk-termux.sh");
         if (termux.isFile()) {
             String script = readUtf8File(termux);
-            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"") || !script.contains("1.0.106-java-android-nativ")) throw new AssertionError("termux v35 version failed");
+            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"") || !script.contains("1.0.107-java-android-nativ")) throw new AssertionError("termux v35 version failed");
         }
     }
 
@@ -1448,13 +1449,13 @@ public final class TestCore {
             if (!android.contains("exportTextAnsi") || !android.contains("exportTextUnicode") || !android.contains("pendingExportTextBytes") || !android.contains("LegacyTextExportModel.forTree")) throw new AssertionError("v47 Android text export bridge missing");
             if (android.contains("new Intent(Intent.ACTION_CREATE_DOCUMENT)") || android.contains("new Intent(Intent.ACTION_OPEN_DOCUMENT)")) throw new AssertionError("raw SAF intents should use LegacyFileDialogModel bridge");
             if (android.contains("text_color\\\".equals(spec.action) || \\\"highlight_color")) throw new AssertionError("RTF color actions still skipped");
-            if (!android.contains("1.0.106-java-android-nativ")) throw new AssertionError("v47 version missing in Android source");
+            if (!android.contains("1.0.107-java-android-nativ")) throw new AssertionError("v47 version missing in Android source");
         }
         File termux = new File("tools/notizen-build-apk-termux.sh");
         if (!termux.isFile()) termux = new File("../tools/notizen-build-apk-termux.sh");
         if (termux.isFile()) {
             String script = readUtf8File(termux);
-            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"") || !script.contains("1.0.106-java-android-nativ")) throw new AssertionError("termux v47 version failed");
+            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"") || !script.contains("1.0.107-java-android-nativ")) throw new AssertionError("termux v47 version failed");
         }
     }
 
@@ -1534,13 +1535,13 @@ public final class TestCore {
             if (!android.contains("showDesktopNoteLayout") || !android.contains("LegacyDesktopNotePaint.forState")) throw new AssertionError("v59 desktop paint Android bridge missing");
             if (!android.contains("LegacySaveWorkflow.planForAndroid")) throw new AssertionError("v59 save workflow Android bridge missing");
             if (!android.contains("LegacySearchResultNavigator.fromResults")) throw new AssertionError("v59 search navigator Android bridge missing");
-            if (!android.contains("1.0.106-java-android-nativ")) throw new AssertionError("v59 version missing in Android source");
+            if (!android.contains("1.0.107-java-android-nativ")) throw new AssertionError("v59 version missing in Android source");
         }
         File termux = new File("tools/notizen-build-apk-termux.sh");
         if (!termux.isFile()) termux = new File("../tools/notizen-build-apk-termux.sh");
         if (termux.isFile()) {
             String script = readUtf8File(termux);
-            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"") || !script.contains("1.0.106-java-android-nativ")) throw new AssertionError("termux v59 version failed");
+            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"") || !script.contains("1.0.107-java-android-nativ")) throw new AssertionError("termux v59 version failed");
         }
     }
 
@@ -1582,7 +1583,7 @@ public final class TestCore {
         LegacyCloseResetModel.ClosePlan cancel = LegacyCloseResetModel.plan(doc, doc.password, LegacyCloseResetModel.Choice.CANCEL);
         LegacyCloseResetModel.ClosePlan save = LegacyCloseResetModel.plan(doc, doc.password, LegacyCloseResetModel.Choice.SAVE);
         if (!cancel.canceled || cancel.proceed || !save.saveFirst || !save.wipePasswordFromMemory) throw new AssertionError("close plan failed");
-        LegacyCloseResetModel.ResetState reset = LegacyCloseResetModel.afterClose("1.0.106-java-android-nativ");
+        LegacyCloseResetModel.ResetState reset = LegacyCloseResetModel.afterClose("1.0.107-java-android-nativ");
         if (!"unbenannt.alx".equals(reset.displayName) || !reset.changed) throw new AssertionError("reset state failed");
 
         LegacySettings settings = new LegacySettings();
@@ -1601,13 +1602,13 @@ public final class TestCore {
         if (!source.isFile()) source = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
         if (source.isFile()) {
             String android = readUtf8File(source);
-            if (!android.contains("closeDocumentLegacy") || !android.contains("showLifecycleStatus") || !android.contains("showDesktopNoteTrayList") || !android.contains("LegacyTreeCreation.newChild") || !android.contains("1.0.106-java-android-nativ")) throw new AssertionError("v65 Android bridge missing");
+            if (!android.contains("closeDocumentLegacy") || !android.contains("showLifecycleStatus") || !android.contains("showDesktopNoteTrayList") || !android.contains("LegacyTreeCreation.newChild") || !android.contains("1.0.107-java-android-nativ")) throw new AssertionError("v65 Android bridge missing");
         }
         File termux = new File("tools/notizen-build-apk-termux.sh");
         if (!termux.isFile()) termux = new File("../tools/notizen-build-apk-termux.sh");
         if (termux.isFile()) {
             String script = readUtf8File(termux);
-            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"") || !script.contains("1.0.106-java-android-nativ")) throw new AssertionError("termux v65-to-v71 version failed");
+            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"") || !script.contains("1.0.107-java-android-nativ")) throw new AssertionError("termux v65-to-v71 version failed");
         }
     }
 
@@ -1620,8 +1621,8 @@ public final class TestCore {
         if (!exec.equals("env NOTIZEN_RESET_WINDOW=1 RESOURCE_NAME=notizen-py-qt python3 -m notizen_py_qt --show --no-tray --reset-window %f")) throw new AssertionError("desktop exec failed: " + exec);
         String entry = LegacyRuntimeIdentity.linuxDesktopEntry();
         if (!entry.contains("Icon=notizen-py-qt") || !entry.contains("StartupWMClass=notizen-py-qt") || entry.contains("Exec=sh ") || entry.contains("Exec=bash ")) throw new AssertionError("desktop entry failed: " + entry);
-        String ident = LegacyRuntimeIdentity.summary("1.0.106-java-android-nativ");
-        if (!ident.contains("de.notizen.android") || !ident.contains("1.0.106-java-android-nativ") || !ident.contains("notizen_py_qt")) throw new AssertionError("runtime identity summary failed: " + ident);
+        String ident = LegacyRuntimeIdentity.summary("1.0.107-java-android-nativ");
+        if (!ident.contains("de.notizen.android") || !ident.contains("1.0.107-java-android-nativ") || !ident.contains("notizen_py_qt")) throw new AssertionError("runtime identity summary failed: " + ident);
 
         LegacyMainLayoutModel.Layout wide = LegacyMainLayoutModel.compute(800, 500, LegacyMainLayoutModel.ANDROID_ORIENTATION_LANDSCAPE);
         LegacyMainLayoutModel.Layout narrow = LegacyMainLayoutModel.compute(360, 780, LegacyMainLayoutModel.ANDROID_ORIENTATION_PORTRAIT);
@@ -1649,13 +1650,13 @@ public final class TestCore {
         if (source.isFile()) {
             String android = readUtf8File(source);
             if (!android.contains("showLayoutDiagnostics") || !android.contains("LegacyMainLayoutModel.compute") || !android.contains("showRuntimeIdentity") || !android.contains("LegacyRuntimeIdentity.summary")) throw new AssertionError("v71 Android runtime/layout bridge missing");
-            if (!android.contains("LegacyPackagePermissionModel.describe") || !android.contains("1.0.106-java-android-nativ")) throw new AssertionError("v71 Android version/packaging bridge missing");
+            if (!android.contains("LegacyPackagePermissionModel.describe") || !android.contains("1.0.107-java-android-nativ")) throw new AssertionError("v71 Android version/packaging bridge missing");
         }
         File termux = new File("tools/notizen-build-apk-termux.sh");
         if (!termux.isFile()) termux = new File("../tools/notizen-build-apk-termux.sh");
         if (termux.isFile()) {
             String script = readUtf8File(termux);
-            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"") || !script.contains("1.0.106-java-android-nativ")) throw new AssertionError("termux v71 version failed");
+            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"") || !script.contains("1.0.107-java-android-nativ")) throw new AssertionError("termux v71 version failed");
         }
     }
 
@@ -1697,7 +1698,7 @@ public final class TestCore {
 
         LegacyApkBuildPipeline.Params params = LegacyApkBuildPipeline.defaultParams();
         String build = LegacyApkBuildPipeline.summary(params);
-        if (params.versionCode != 106 || !params.versionName.equals("1.0.106-java-android-nativ") || !build.contains("d8 --lib android.jar") || !build.contains("NotizenJavaAndroidNativ-v106-debug.apk")) throw new AssertionError("apk pipeline failed: " + build);
+        if (params.versionCode != 107 || !params.versionName.equals("1.0.107-java-android-nativ") || !build.contains("d8 --lib android.jar") || !build.contains("NotizenJavaAndroidNativ-v107-debug.apk")) throw new AssertionError("apk pipeline failed: " + build);
         if (!"dialog_focus".equals(LegacyToolbarPresentation.forLabel("Dialoge").action) || !"apk_build_plan".equals(LegacyToolbarPresentation.forLabel("Buildplan").action)) throw new AssertionError("v83 toolbar mapping failed");
         LegacyActionState.State noDoc = new LegacyActionState.State(false, false, false, false, false, false, false, false);
         if (!LegacyActionState.isEnabled("dialog_focus", noDoc) || !LegacyActionState.isEnabled("apk_build_plan", noDoc)) throw new AssertionError("v83 action enablement failed");
@@ -1706,13 +1707,13 @@ public final class TestCore {
         if (!source.isFile()) source = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
         if (source.isFile()) {
             String android = readUtf8File(source);
-            if (!android.contains("showActivationFocusModel") || !android.contains("LegacyMainWindowChrome.summary") || !android.contains("showApkBuildPlan") || !android.contains("1.0.106-java-android-nativ")) throw new AssertionError("v83 Android bridge missing");
+            if (!android.contains("showActivationFocusModel") || !android.contains("LegacyMainWindowChrome.summary") || !android.contains("showApkBuildPlan") || !android.contains("1.0.107-java-android-nativ")) throw new AssertionError("v83 Android bridge missing");
         }
         File termux = new File("tools/notizen-build-apk-termux.sh");
         if (!termux.isFile()) termux = new File("../tools/notizen-build-apk-termux.sh");
         if (termux.isFile()) {
             String script = readUtf8File(termux);
-            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"") || !script.contains("1.0.106-java-android-nativ") || !script.contains("--lib \"$ANDROID_JAR\"")) throw new AssertionError("termux v83 version/d8 lib failed");
+            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"") || !script.contains("1.0.107-java-android-nativ") || !script.contains("--lib \"$ANDROID_JAR\"")) throw new AssertionError("termux v83 version/d8 lib failed");
         }
     }
 
@@ -1758,7 +1759,7 @@ public final class TestCore {
         if (!source.isFile()) source = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
         if (source.isFile()) {
             String android = readUtf8File(source);
-            if (!android.contains("showLegacyFontSetModel") || !android.contains("showWindowMoveResizeModel") || !android.contains("showAlxPipelineModel") || !android.contains("1.0.106-java-android-nativ")) throw new AssertionError("v95 Android bridge missing");
+            if (!android.contains("showLegacyFontSetModel") || !android.contains("showWindowMoveResizeModel") || !android.contains("showAlxPipelineModel") || !android.contains("1.0.107-java-android-nativ")) throw new AssertionError("v95 Android bridge missing");
             if (android.contains("settings.autosaveEnabled")) throw new AssertionError("MainActivity still references missing LegacySettings.autosaveEnabled field");
             if (!android.contains("settings == null || settings.autosaveSeconds > 0")) throw new AssertionError("autosave enabled bridge must use LegacySettings.autosaveSeconds");
         }
@@ -1766,7 +1767,7 @@ public final class TestCore {
         if (!termux.isFile()) termux = new File("../tools/notizen-build-apk-termux.sh");
         if (termux.isFile()) {
             String script = readUtf8File(termux);
-            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"") || !script.contains("1.0.106-java-android-nativ") || !script.contains("--lib \"$ANDROID_JAR\"")) throw new AssertionError("termux v95 version failed");
+            if (!script.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"") || !script.contains("1.0.107-java-android-nativ") || !script.contains("--lib \"$ANDROID_JAR\"")) throw new AssertionError("termux v95 version failed");
         }
     }
 
@@ -1833,7 +1834,7 @@ public final class TestCore {
         if (!source.isFile()) source = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
         if (source.isFile()) {
             String text = readUtf8File(source);
-            if (!text.contains("1.0.106-java-android-nativ")
+            if (!text.contains("1.0.107-java-android-nativ")
                     || !text.contains("CONTENT_HEADER_DP")
                     || !text.contains("yellowBridge")
                     || !text.contains("RUNTIME_SNAPSHOT_FILE")
@@ -1849,7 +1850,7 @@ public final class TestCore {
         if (!gradle.isFile()) gradle = new File("../app/build.gradle");
         if (gradle.isFile()) {
             String build = readUtf8File(gradle);
-            if (!build.contains("versionCode 106") || !build.contains("1.0.106-java-android-nativ")) throw new AssertionError("v100 Gradle version missing");
+            if (!build.contains("versionCode 107") || !build.contains("1.0.107-java-android-nativ")) throw new AssertionError("v100 Gradle version missing");
         }
     }
 
@@ -1901,7 +1902,7 @@ public final class TestCore {
         if (!script.isFile()) script = new File("../tools/notizen-build-apk-termux.sh");
         if (main.isFile()) {
             String text = readUtf8File(main);
-            if (!text.contains("1.0.106-java-android-nativ")
+            if (!text.contains("1.0.107-java-android-nativ")
                     || !text.contains("ActivePane")
                     || !text.contains("addToolbarRow(toolbarPanel, \"Baum/Text\")")
                     || !text.contains("activePaneForMiddleToolbar")
@@ -1916,7 +1917,7 @@ public final class TestCore {
         }
         if (script.isFile()) {
             String text = readUtf8File(script);
-            if (!text.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"") || !text.contains("1.0.106-java-android-nativ")) {
+            if (!text.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"") || !text.contains("1.0.107-java-android-nativ")) {
                 throw new AssertionError("v102 termux version missing");
             }
         }
@@ -1953,7 +1954,7 @@ public final class TestCore {
         if (!main.isFile()) main = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
         if (main.isFile()) {
             String text = readUtf8File(main);
-            if (!text.contains("1.0.106-java-android-nativ")
+            if (!text.contains("1.0.107-java-android-nativ")
                     || !text.contains("resetToFreshStartDocument")
                     || !text.contains("LegacyFreshStartModel.newFreshStartDocument")
                     || !text.contains("clearVisibleDocumentViewsForFreshStart")
@@ -2004,7 +2005,7 @@ public final class TestCore {
         if (!main.isFile()) main = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
         if (main.isFile()) {
             String text = readUtf8File(main);
-            if (!text.contains("1.0.106-java-android-nativ")
+            if (!text.contains("1.0.107-java-android-nativ")
                     || !text.contains("ScaleGestureDetector")
                     || !text.contains("zoomRtfTextByStep")
                     || !text.contains("zoomTreeTextByStep")
@@ -2024,7 +2025,7 @@ public final class TestCore {
         if (!main.isFile()) main = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
         if (main.isFile()) {
             String text = readUtf8File(main);
-            if (!text.contains("1.0.106-java-android-nativ")
+            if (!text.contains("1.0.107-java-android-nativ")
                     || !text.contains("ToolbarZoomLayout extends LinearLayout")
                     || !text.contains("dispatchTouchEvent(MotionEvent event)")
                     || !text.contains("scheduleAndroidUiZoomSettingsSave")
@@ -2045,8 +2046,8 @@ public final class TestCore {
         if (!script.isFile()) script = new File("../tools/notizen-build-apk-termux.sh");
         if (script.isFile()) {
             String scriptText = readUtf8File(script);
-            if (!scriptText.contains("VERSION_CODE=\"${VERSION_CODE:-106}\"")
-                    || !scriptText.contains("1.0.106-java-android-nativ")) {
+            if (!scriptText.contains("VERSION_CODE=\"${VERSION_CODE:-107}\"")
+                    || !scriptText.contains("1.0.107-java-android-nativ")) {
                 throw new AssertionError("v106 termux version failed");
             }
         }
@@ -2090,7 +2091,7 @@ public final class TestCore {
         if (!main.isFile()) main = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
         if (main.isFile()) {
             String text = readUtf8File(main);
-            if (!text.contains("1.0.106-java-android-nativ")
+            if (!text.contains("1.0.107-java-android-nativ")
                     || !text.contains("createQuickSearchBar")
                     || !text.contains("quickSearchNext")
                     || !text.contains("quickSearchAllResults")
@@ -2103,6 +2104,65 @@ public final class TestCore {
                     || !text.contains("align_justify")
                     || !text.contains("RtfParagraphAlignmentSpan")) {
                 throw new AssertionError("v106 Android RTF/search bridge missing");
+            }
+        }
+    }
+
+
+    private static void testAndroidV107ContextMenusAndTreeDragDrop() throws Exception {
+        if (!"tree_paste_as_child".equals(LegacyContextMenus.byLegacyIndex(LegacyContextMenus.MenuKind.TREE, 11).action)
+                || !"tree_move_before_target".equals(LegacyContextMenus.byLegacyIndex(LegacyContextMenus.MenuKind.TREE, 19).action)
+                || !"editor_select_all".equals(LegacyContextMenus.byLegacyIndex(LegacyContextMenus.MenuKind.EDITOR, 9).action)
+                || !LegacyContextMenus.byAction("editor_text_color").accessibilityLabel().equals("Textfarbe…")) {
+            throw new AssertionError("v107 expanded context menu model failed");
+        }
+
+        NoteDocument doc = NoteDocument.newDocument();
+        NoteNode a = doc.root.addChild(new NoteNode("A", ""));
+        NoteNode b = doc.root.addChild(new NoteNode("B", ""));
+        NoteNode c = doc.root.addChild(new NoteNode("C", ""));
+        NoteNode child = a.addChild(new NoteNode("Kind", ""));
+        if (!LegacyTreeDragDrop.decision(a, c, doc.root, LegacyTreeDragDrop.DropMode.AFTER).allowed
+                || !"move-after-target".equals(LegacyTreeDragDrop.decision(a, c, doc.root, LegacyTreeDragDrop.DropMode.AFTER).reason)) {
+            throw new AssertionError("v107 drag/drop decision failed");
+        }
+        NoteNode movedAfter = LegacyTreeDragDrop.moveAfter(a, c, doc.root);
+        if (movedAfter != a || doc.root.children.get(2) != a) throw new AssertionError("v107 move-after failed");
+        NoteNode movedChild = LegacyTreeDragDrop.moveAsChild(c, b, doc.root);
+        if (movedChild != c || c.parent != b || b.children.get(b.children.size() - 1) != c || !b.expanded) throw new AssertionError("v107 move-as-child failed");
+        if (NoteTreeOps.legacyMoveAsLastChild(a, child) != null) throw new AssertionError("v107 prevented descendant target failed");
+        NoteNode pasted = NoteTreeOps.legacyPasteCloneAsLastChild(a, b);
+        if (pasted == null || pasted.parent != b || !"A".equals(pasted.title) || pasted == a) throw new AssertionError("v107 paste-as-child clone failed");
+
+        LegacyTreeLabelEditing.EditResult rename = LegacyTreeLabelEditing.commit("Alt", "   ");
+        if (!rename.changed || !rename.usedFallback || !"...".equals(rename.newTitle)) throw new AssertionError("v107 inline rename fallback failed");
+
+        File adapter = new File("app/src/main/java/de/notizen/android/TreeListAdapter.java");
+        if (!adapter.isFile()) adapter = new File("../app/src/main/java/de/notizen/android/TreeListAdapter.java");
+        if (adapter.isFile()) {
+            String text = readUtf8File(adapter);
+            if (!text.contains("InlineEditListener")
+                    || !text.contains("beginInlineEdit")
+                    || !text.contains("DropPreview")
+                    || !text.contains("setDropPreview")
+                    || !text.contains("IME_ACTION_DONE")) {
+                throw new AssertionError("v107 adapter inline/drop bridge missing");
+            }
+        }
+
+        File main = new File("app/src/main/java/de/notizen/android/MainActivity.java");
+        if (!main.isFile()) main = new File("../app/src/main/java/de/notizen/android/MainActivity.java");
+        if (main.isFile()) {
+            String text = readUtf8File(main);
+            if (!text.contains("1.0.107-java-android-nativ")
+                    || !text.contains("showTreeContextMenu")
+                    || !text.contains("showEditorContextMenu")
+                    || !text.contains("beginTreeDragFromRow")
+                    || !text.contains("handleTreeDragEvent")
+                    || !text.contains("pasteNodeAsChild")
+                    || !text.contains("renameCurrentNodeInline")
+                    || !text.contains("updateActivePaneChrome")) {
+                throw new AssertionError("v107 Android context/tree bridge missing");
             }
         }
     }

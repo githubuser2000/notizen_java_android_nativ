@@ -50,6 +50,7 @@ import android.text.style.URLSpan;
 import android.text.style.UnderlineSpan;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
+import android.view.DragEvent;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -166,6 +167,7 @@ import de.notizen.android.core.LegacyConfigSnapshot;
 import de.notizen.android.core.LegacyScrollbars;
 import de.notizen.android.core.LegacyTreeDragDrop;
 import de.notizen.android.core.LegacyTreeExpansion;
+import de.notizen.android.core.LegacyTreeLabelEditing;
 import de.notizen.android.core.LegacyTreeDelete;
 import de.notizen.android.core.LegacyUnifiedNote;
 import de.notizen.android.core.LegacyDesktopNoteTreeOps;
@@ -190,7 +192,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.106-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.107-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -304,6 +306,9 @@ public final class MainActivity extends Activity {
     private boolean editorHistoryRestoring = false;
     private boolean editorHistorySnapshotLocked = false;
     private boolean formatToolbarUpdateScheduled = false;
+    private NoteNode treeDragSource;
+    private NoteNode treeDragPreviewTarget;
+    private TreeListAdapter.DropPreview treeDragPreviewMode = TreeListAdapter.DropPreview.NONE;
     private long lastEditorTypingUndoAt = 0L;
     private final Map<String, TextView> textToolbarActionButtons = new LinkedHashMap<>();
 
@@ -802,9 +807,17 @@ public final class MainActivity extends Activity {
             }
         });
         treeList.setOnItemLongClickListener((parent, view, position, id) -> {
-            toggleNodeExpanded(treeAdapter.getItem(position).node, true);
+            TreeListAdapter.FlatNode row = treeAdapter.getItem(position);
+            NoteNode node = row.node;
+            setActivePane(ActivePane.TREE_NODE);
+            treeList.requestFocus();
+            selectNode(node, false);
+            int gripEdge = dp(42 + row.depth * 22);
+            if (lastTreeTouchX[0] >= 0f && lastTreeTouchX[0] <= gripEdge) beginTreeDragFromRow(view, node);
+            else showTreeContextMenu(node);
             return true;
         });
+        treeList.setOnDragListener((view, event) -> handleTreeDragEvent(event));
         left.addView(treeList, new LinearLayout.LayoutParams(-1, wide ? -1 : dp(210), 1));
         if (wide) {
             int initialTreePx = dp(normalizedInitialTreePaneWidthDp(widthDp));
@@ -858,6 +871,11 @@ public final class MainActivity extends Activity {
         editor.setOnTouchListener((view, event) -> {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setActivePane(ActivePane.RTF_EDITOR);
             return handleEditorPinchTouch(event);
+        });
+        editor.setOnLongClickListener(view -> {
+            setActivePane(ActivePane.RTF_EDITOR);
+            showEditorContextMenu();
+            return true;
         });
         editor.addTextChangedListener(new SimpleWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {
@@ -1514,13 +1532,31 @@ public final class MainActivity extends Activity {
         lastFormatTarget = target;
         if (target == FormatTarget.RTF_EDITOR) lastActivePane = ActivePane.RTF_EDITOR;
         else if (lastActivePane == ActivePane.RTF_EDITOR || lastActivePane == null) lastActivePane = ActivePane.TREE_NODE;
+        updateActivePaneChrome();
     }
 
     private void setActivePane(ActivePane pane) {
         if (pane == null) return;
         lastActivePane = pane;
         lastFormatTarget = pane == ActivePane.RTF_EDITOR ? FormatTarget.RTF_EDITOR : FormatTarget.TREE_NODE;
+        updateActivePaneChrome();
         scheduleFormatToolbarStateUpdate();
+    }
+
+    private void updateActivePaneChrome() {
+        if (treeAdapter != null) treeAdapter.setTreeActive(lastActivePane == ActivePane.TREE_NODE);
+        if (rootTitleView != null) {
+            boolean active = lastActivePane == ActivePane.TREE_NODE;
+            rootTitleView.setBackground(roundedBackground(active ? Color.rgb(255, 245, 176) : Color.rgb(255, 250, 205), active ? Color.rgb(210, 150, 32) : Color.rgb(226, 213, 145), 8));
+        }
+        if (titleEdit != null) {
+            boolean active = lastActivePane == ActivePane.TITLE_TEXT;
+            titleEdit.setBackground(roundedBackground(active ? Color.rgb(255, 245, 176) : Color.rgb(255, 250, 205), active ? Color.rgb(210, 150, 32) : Color.rgb(226, 213, 145), 8));
+        }
+        if (editor != null) {
+            boolean active = lastActivePane == ActivePane.RTF_EDITOR;
+            editor.setBackground(roundedBackground(Color.WHITE, active ? Color.rgb(74, 133, 216) : Color.rgb(213, 219, 229), 8));
+        }
     }
 
     private ActivePane activePaneForMiddleToolbar() {
@@ -2380,6 +2416,301 @@ public final class MainActivity extends Activity {
         rebuildTree();
         selectNode(pasted, true);
         status("Knoten eingefügt");
+    }
+
+    private void pasteNodeAsChild() {
+        if (currentNode == null) return;
+        saveCurrentEditorToNode();
+        NoteNode source = clipboardNodeFromSystem();
+        if (source == null && internalClipboardNode != null) source = internalClipboardNode.cloneDeep(false);
+        if (source == null) {
+            error("Einfügen", "Die Zwischenablage enthält keinen Notizen-Knoten.");
+            return;
+        }
+        NoteNode pasted = NoteTreeOps.legacyPasteCloneAsLastChild(source, currentNode);
+        if (pasted == null) {
+            status("Einfügen als Unterknoten nicht möglich");
+            return;
+        }
+        ensureAncestorsExpanded(pasted);
+        markDocumentChanged();
+        rebuildTree();
+        selectNode(pasted, true);
+        status("Knoten als Unterknoten eingefügt");
+    }
+
+    private void saveCurrentRtfFromContext() {
+        saveCurrentEditorToNode();
+        rebuildTree();
+        if (currentNode != null) selectNode(currentNode, false);
+        status("Aktueller RTF-Inhalt in Knoten gespeichert");
+    }
+
+    private void renameCurrentNodeInline() {
+        if (currentNode == null || treeAdapter == null) return;
+        saveCurrentEditorToNode();
+        setActivePane(ActivePane.TREE_NODE);
+        if (treeList != null) treeList.requestFocus();
+        int pos = flatIndexOf(currentNode);
+        if (pos >= 0 && treeList != null) treeList.smoothScrollToPosition(pos);
+        treeAdapter.beginInlineEdit(currentNode, new TreeListAdapter.InlineEditListener() {
+            @Override public void onCommit(NoteNode node, String candidateTitle) {
+                commitInlineTreeRename(node, candidateTitle);
+            }
+            @Override public void onCancel(NoteNode node) {
+                status("Umbenennen abgebrochen");
+            }
+        });
+        status("Knotentitel direkt im Baum bearbeiten");
+    }
+
+    private void commitInlineTreeRename(NoteNode node, String candidateTitle) {
+        if (node == null) return;
+        LegacyTreeLabelEditing.EditResult result = LegacyTreeLabelEditing.commit(node.title, candidateTitle);
+        node.title = result.newTitle;
+        if (node == currentNode && titleEdit != null) {
+            loadingEditor = true;
+            titleEdit.setText(result.newTitle);
+            titleEdit.setSelection(titleEdit.getText().length());
+            loadingEditor = false;
+            titleDirty = false;
+        }
+        if (result.changed) {
+            markDocumentChanged();
+            updateTitle();
+            status(result.usedFallback ? "Knoten umbenannt: ..." : "Knoten umbenannt");
+        } else {
+            status("Knotentitel unverändert");
+        }
+        rebuildTree();
+        if (treeAdapter != null) treeAdapter.setSelected(node);
+        if (treeList != null) {
+            int pos = flatIndexOf(node);
+            if (pos >= 0) treeList.setItemChecked(pos, true);
+            treeList.requestFocus();
+        }
+    }
+
+    private void beginTreeDragFromRow(View rowView, NoteNode node) {
+        if (rowView == null || node == null) return;
+        if (node.parent == null) {
+            toast("Wurzel kann nicht gezogen werden");
+            status("Die Wurzel bleibt oben");
+            return;
+        }
+        saveCurrentEditorToNode();
+        treeDragSource = node;
+        ClipData data = ClipData.newPlainText("Notizen-Knoten", safeTitle(node));
+        View.DragShadowBuilder shadow = new View.DragShadowBuilder(rowView);
+        boolean started;
+        if (Build.VERSION.SDK_INT >= 24) started = rowView.startDragAndDrop(data, shadow, node, 0);
+        else started = rowView.startDrag(data, shadow, node, 0);
+        if (started) {
+            status("Knoten ziehen: oben=vor Ziel, Mitte=als Kind, unten=nach Ziel");
+            toast("Ziehen: oben/vor · Mitte/Kind · unten/nach");
+        } else {
+            treeDragSource = null;
+            status("Drag/Drop nicht gestartet; nutze 'Vor Ziel' im Menü");
+            showMoveBeforeTargetDialog();
+        }
+    }
+
+    private boolean handleTreeDragEvent(DragEvent event) {
+        if (event == null) return false;
+        Object local = event.getLocalState();
+        boolean noteDrag = local instanceof NoteNode || treeDragSource != null;
+        switch (event.getAction()) {
+            case DragEvent.ACTION_DRAG_STARTED:
+                return noteDrag;
+            case DragEvent.ACTION_DRAG_LOCATION:
+                if (!noteDrag) return false;
+                updateTreeDropPreview(event);
+                return true;
+            case DragEvent.ACTION_DROP:
+                if (!noteDrag) return false;
+                return finishTreeDrop(event);
+            case DragEvent.ACTION_DRAG_ENDED:
+                clearTreeDropPreview();
+                treeDragSource = null;
+                return true;
+            default:
+                return noteDrag;
+        }
+    }
+
+    private static final class TreeDropTarget {
+        final NoteNode node;
+        final TreeListAdapter.DropPreview mode;
+        TreeDropTarget(NoteNode node, TreeListAdapter.DropPreview mode) {
+            this.node = node;
+            this.mode = mode == null ? TreeListAdapter.DropPreview.NONE : mode;
+        }
+    }
+
+    private TreeDropTarget treeDropTargetFromEvent(DragEvent event) {
+        if (treeList == null || treeAdapter == null || event == null) return null;
+        int position = treeList.pointToPosition((int) event.getX(), (int) event.getY());
+        if (position < 0 || position >= treeAdapter.getCount()) return null;
+        TreeListAdapter.FlatNode row = treeAdapter.getItem(position);
+        if (row == null || row.node == null) return null;
+        TreeListAdapter.DropPreview mode = TreeListAdapter.DropPreview.AS_CHILD;
+        View child = treeList.getChildAt(position - treeList.getFirstVisiblePosition());
+        if (child != null && child.getHeight() > 0) {
+            float localY = event.getY() - child.getTop();
+            float third = child.getHeight() / 3f;
+            if (localY < third) mode = TreeListAdapter.DropPreview.BEFORE;
+            else if (localY > third * 2f) mode = TreeListAdapter.DropPreview.AFTER;
+        }
+        if (row.node.parent == null && mode != TreeListAdapter.DropPreview.AS_CHILD) mode = TreeListAdapter.DropPreview.AS_CHILD;
+        return new TreeDropTarget(row.node, mode);
+    }
+
+    private void updateTreeDropPreview(DragEvent event) {
+        TreeDropTarget target = treeDropTargetFromEvent(event);
+        if (target == null) {
+            clearTreeDropPreview();
+            return;
+        }
+        treeDragPreviewTarget = target.node;
+        treeDragPreviewMode = target.mode;
+        if (treeAdapter != null) treeAdapter.setDropPreview(target.node, target.mode);
+    }
+
+    private void clearTreeDropPreview() {
+        treeDragPreviewTarget = null;
+        treeDragPreviewMode = TreeListAdapter.DropPreview.NONE;
+        if (treeAdapter != null) treeAdapter.clearDropPreview();
+    }
+
+    private boolean finishTreeDrop(DragEvent event) {
+        NoteNode source = event.getLocalState() instanceof NoteNode ? (NoteNode) event.getLocalState() : treeDragSource;
+        TreeDropTarget target = treeDropTargetFromEvent(event);
+        clearTreeDropPreview();
+        treeDragSource = null;
+        if (source == null || target == null || target.node == null) {
+            status("Kein gültiges Drop-Ziel");
+            return false;
+        }
+        if (source == target.node) {
+            status("Quelle und Ziel sind derselbe Knoten");
+            return false;
+        }
+        saveCurrentEditorToNode();
+        NoteNode moved = null;
+        String actionText = "verschoben";
+        if (target.mode == TreeListAdapter.DropPreview.AS_CHILD) {
+            moved = NoteTreeOps.legacyMoveAsLastChild(source, target.node);
+            actionText = "als Unterknoten verschoben";
+        } else if (target.mode == TreeListAdapter.DropPreview.AFTER) {
+            moved = NoteTreeOps.legacyMoveAfterTarget(source, target.node);
+            actionText = "nach Ziel verschoben";
+        } else {
+            moved = NoteTreeOps.legacyMoveBeforeTarget(source, target.node);
+            actionText = "vor Ziel verschoben";
+        }
+        if (moved == null) {
+            status("Dieses Drag/Drop-Ziel ist nicht gültig");
+            toast("Ziel nicht gültig");
+            return false;
+        }
+        ensureAncestorsExpanded(moved);
+        markDocumentChanged();
+        rebuildTree();
+        selectNode(moved, false);
+        setActivePane(ActivePane.TREE_NODE);
+        status("Knoten " + actionText);
+        return true;
+    }
+
+    private void showTreeContextMenu(NoteNode node) {
+        if (node == null) return;
+        setActivePane(ActivePane.TREE_NODE);
+        if (treeList != null) treeList.requestFocus();
+        if (node != currentNode) selectNode(node, false);
+        ArrayList<String> labels = new ArrayList<>();
+        ArrayList<ContinueCallback> actions = new ArrayList<>();
+        addMenuAction(labels, actions, "Neuer Unterknoten", this::newChild);
+        addMenuAction(labels, actions, "Neuer Knoten daneben", this::newNext);
+        addMenuAction(labels, actions, "Direkt im Baum umbenennen", this::renameCurrentNodeInline);
+        addMenuAction(labels, actions, "Kopieren", () -> copyCurrentNode(false));
+        addMenuAction(labels, actions, "Ausschneiden", this::cutCurrentNode);
+        addMenuAction(labels, actions, "Einfügen", this::pasteNode);
+        addMenuAction(labels, actions, "Einfügen als Unterknoten", this::pasteNodeAsChild);
+        addMenuAction(labels, actions, "Löschen", this::deleteCurrent);
+        addMenuAction(labels, actions, currentNode != null && currentNode.expanded ? "Zuklappen" : "Aufklappen", this::toggleExpanded);
+        addMenuAction(labels, actions, "Alle aufklappen", this::expandAllNodes);
+        addMenuAction(labels, actions, "Alle zuklappen", this::collapseAllNodes);
+        addMenuAction(labels, actions, "Nach oben", this::moveCurrentUp);
+        addMenuAction(labels, actions, "Nach unten", this::moveCurrentDown);
+        addMenuAction(labels, actions, "Einrücken", this::indentCurrent);
+        addMenuAction(labels, actions, "Ausrücken", this::outdentCurrent);
+        addMenuAction(labels, actions, "Vor Ziel verschieben…", this::showMoveBeforeTargetDialog);
+        addMenuAction(labels, actions, "Haftnotiz / Widget", this::showDesktopNoteDialog);
+        addMenuAction(labels, actions, "Haftnotiz-Liste", this::showDesktopNoteTrayList);
+        addMenuAction(labels, actions, "Wecker", this::showAlarmDialog);
+        addMenuAction(labels, actions, "Knoten-Textfarbe", this::showTreeTextColorPalette);
+        addMenuAction(labels, actions, "Knoten-Hintergrund", this::showTreeBackgroundPalette);
+        addMenuAction(labels, actions, "Knotenformat normal", () -> applyTreeFormatAction(LegacyRichTextToolbar.findByAction("format_regular")));
+        addMenuAction(labels, actions, "RTF in Knoten speichern", this::saveCurrentRtfFromContext);
+        addMenuAction(labels, actions, "Knoten als TXT exportieren", this::exportCurrentNodeText);
+        addMenuAction(labels, actions, "Knoten als RTF exportieren", this::exportCurrentNodeRtf);
+        addMenuAction(labels, actions, "Teilbaum zusammenfassen", this::createUnifiedCurrentNote);
+        new AlertDialog.Builder(this)
+                .setTitle("Baum: " + safeTitle(currentNode))
+                .setItems(labels.toArray(new String[0]), (d, which) -> actions.get(which).run())
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void showEditorContextMenu() {
+        if (editor == null) return;
+        setActivePane(ActivePane.RTF_EDITOR);
+        editor.requestFocus();
+        ArrayList<String> labels = new ArrayList<>();
+        ArrayList<ContinueCallback> actions = new ArrayList<>();
+        addMenuAction(labels, actions, "Rückgängig", this::undoEditorChange);
+        addMenuAction(labels, actions, "Wiederholen", this::redoEditorChange);
+        addMenuAction(labels, actions, "Ausschneiden", () -> copyEditorSelectionToClipboard(true));
+        addMenuAction(labels, actions, "Kopieren", () -> copyEditorSelectionToClipboard(false));
+        addMenuAction(labels, actions, "Einfügen", this::pasteIntoEditorFromClipboard);
+        addMenuAction(labels, actions, "Löschen", this::deleteEditorSelectionOrChar);
+        addMenuAction(labels, actions, "Alles markieren", this::selectAllEditorText);
+        addMenuAction(labels, actions, "Bild einfügen…", this::insertImage);
+        addMenuAction(labels, actions, "Datum einfügen", this::insertDate);
+        addMenuAction(labels, actions, "Punkt einfügen", this::insertLegacyBullet);
+        addMenuAction(labels, actions, "Normal", () -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_regular")));
+        addMenuAction(labels, actions, "Fett", () -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_bold")));
+        addMenuAction(labels, actions, "Kursiv", () -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_italic")));
+        addMenuAction(labels, actions, "Unterstrichen", () -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_underline")));
+        addMenuAction(labels, actions, "Durchgestrichen", () -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_strike")));
+        addMenuAction(labels, actions, "Textfarbe…", () -> showRtfColorPalette(LegacyColorDialogModel.Role.RTF_TEXT));
+        addMenuAction(labels, actions, "Hintergrund…", () -> showRtfColorPalette(LegacyColorDialogModel.Role.RTF_HIGHLIGHT));
+        addMenuAction(labels, actions, "Schriftart…", this::showFontFamilyDialog);
+        addMenuAction(labels, actions, "Schriftgröße…", this::showFontSizeDialog);
+        addMenuAction(labels, actions, "Linksbündig", () -> applyAlignmentToSelection("align_left"));
+        addMenuAction(labels, actions, "Zentriert", () -> applyAlignmentToSelection("align_center"));
+        addMenuAction(labels, actions, "Rechtsbündig", () -> applyAlignmentToSelection("align_right"));
+        addMenuAction(labels, actions, "Blocksatz", () -> applyAlignmentToSelection("align_justify"));
+        addMenuAction(labels, actions, "Suchen", () -> showQuickSearchBar(true));
+        new AlertDialog.Builder(this)
+                .setTitle("RTF-Text")
+                .setItems(labels.toArray(new String[0]), (d, which) -> actions.get(which).run())
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void addMenuAction(List<String> labels, List<ContinueCallback> actions, String label, ContinueCallback action) {
+        if (labels == null || actions == null || label == null || action == null) return;
+        labels.add(label);
+        actions.add(action);
+    }
+
+    private void selectAllEditorText() {
+        if (editor == null) return;
+        editor.requestFocus();
+        editor.selectAll();
+        setActivePane(ActivePane.RTF_EDITOR);
+        status("RTF-Text markiert");
     }
 
     private NoteNode clipboardNodeFromSystem() {
@@ -4700,7 +5031,9 @@ public final class MainActivity extends Activity {
         buildRows(document.ensureRoot(), 0, rows);
         treeAdapter.setRows(rows);
         treeAdapter.setSelected(currentNode);
+        treeAdapter.setTreeActive(lastActivePane == ActivePane.TREE_NODE);
         rootTitleView.setText(document.ensureRoot().title == null ? "start" : document.ensureRoot().title);
+        updateActivePaneChrome();
     }
 
     private void finishLoadedDocument(String message) {
