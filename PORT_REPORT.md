@@ -337,3 +337,12 @@ Neu hinzugekommen sind `LegacyFontSetModel`, `LegacyWindowMoveResizeModel` und `
 - Die Speichernachfrage vor dem Laden/Neuanlegen wird für einen leeren Ein-Knoten-Startbaum ohne sichtbaren RTF-Text unterdrückt.
 - Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
 
+
+## v101
+
+- Version erhöht auf `versionCode 101` / `versionName 1.0.101-java-android-nativ`.
+- Android-AppWidgetProvider, Widget-Layout und Manifest-Metadaten ergänzt, damit die Haftnotiz-Aktion den aktuellen Knoten als natives Android-Widget pinnen oder vorhandene Widgets aktualisieren kann.
+- Gemeinsame Textformat-Leiste für Baum und RTF-Box: Fokus-/Touch-Erkennung entscheidet, ob Formatierung den ausgewählten Baumknoten oder die RTF-Auswahl betrifft.
+- Baumknoten können nun mobil fett, kursiv, unterstrichen, durchgestrichen, mit Fontfamilie, Fontgröße sowie Text-/Hintergrundfarbe dargestellt und als ALX-Zusatzattribute erhalten werden.
+- Erster Leistenbutton `Leer` stellt nach Speicherabfrage einen leeren Ein-Knoten-Startzustand her.
+- Snapshot- und Editor-Sicherungen wurden gegen versehentliches Überschreiben mit transient leeren Zuständen gehärtet.

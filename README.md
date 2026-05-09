@@ -21,7 +21,7 @@ In dieser Ausführungsumgebung sind kein Android SDK und kein Gradle installiert
 - Legacy-Aufzählungspunkt aus der alten `ToolStrip_dot`-Aktion (`CR + • + drei Leerzeichen`), Android-normalisiert als Zeilenumbruch.
 - Legacy-Tastaturkürzel aus Notizen.NET/PyQt für Hardware-Tastaturen, z. B. `Ctrl+S`, `Ctrl+O`, `Ctrl+F`, `Ctrl+Space`, Baum-`Insert`/`Delete`/`Enter` und Editor-Schriftgröße per `Ctrl+Plus/Minus`.
 - Legacy-Farbpalette aus Notizen.NET inklusive der historischen `Random.Next(0,14)`-Reichweite.
-- Haftnotiz-Metadaten (`visible`, `x`, `y`, `width`, `height`, `opacity`, `argb`) anzeigen, ändern und entfernen.
+- Haftnotiz-Metadaten (`visible`, `x`, `y`, `width`, `height`, `opacity`, `argb`) anzeigen, ändern und entfernen; der aktuelle Knoten kann zusätzlich als Android-Startbildschirm-Widget angelegt werden.
 - Wecker-Metadaten und native Android-Weckerplanung mit Notification-Ausgabe. Wiederholungen: einmalig, täglich, wöchentlich, monatlich, jährlich; die alten `wecker.vb`-Checkboxnamen und Intervall-Einheiten liegen als Java-Mapping vor.
 - RTF wird im Editor nativ als Android-`Spannable` angezeigt: Textformatierungen, Schriftgrößen, Schriftarten, Farben, Hervorhebungen, Ausrichtung, Einzüge, Hyperlinks, Objekt-/Feldplatzhalter und Bilder aus `\pict`-Blöcken bleiben sichtbar bzw. erhalten. Zusätzlich gibt es eine HTML-Vorschau für weitere RichTextBox-Details.
 - HTML-Import in den aktuellen Knoten: HTML wird dependency-frei in RTF übertragen, inklusive Basis-Tags/CSS, Data-URI-Bildern, Hyperlinks, Listen-/Tabellen-Plaintext-Brücke und erhaltenen Notizen-Spezialfeldern.
@@ -54,7 +54,7 @@ In dieser Ausführungsumgebung sind kein Android SDK und kein Gradle installiert
 
 ## Bewusst mobil angepasst
 
-Android hat keinen Windows-Tray, keine WinForms-Desktop-Haftnotizen und kein frei schwebendes Desktop-Fenstersystem wie die alte Anwendung. Diese Zustände werden deshalb in Dateien erhalten und können mobil editiert werden, aber sie erscheinen nicht als separate Desktop-Fenster.
+Android hat keinen Windows-Tray und kein frei schwebendes WinForms-Desktop-Fenstersystem wie die alte Anwendung. Diese Zustände werden in Dateien erhalten und können mobil editiert werden; zusätzlich kann die Android-Version den aktuellen Knoten als natives Startbildschirm-Widget anlegen.
 
 Die RTF-Bearbeitung ist mobil-pragmatisch: RTF wird in Text konvertiert und im nativen `EditText` bearbeitet. Wird eine Notiz nicht editiert, bleibt ihr ursprüngliches RTF erhalten. Wird sie editiert, wird der neue Text als sauberes Plain-RTF gespeichert. Die Vorschau, der HTML-Export und der HTML-Import nutzen aber eine erweiterte RTF/HTML-Brücke für typische RichTextBox-Formatierung, Bilder, Hyperlinks, Felder und OLE-/Objektgruppen.
 
@@ -333,3 +333,14 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Die Speichernachfrage vor dem Laden/Neuanlegen wird für einen leeren Ein-Knoten-Startbaum ohne sichtbaren RTF-Text unterdrückt.
 - Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
 
+
+## v101
+
+- Version erhöht auf `versionCode 101` / `versionName 1.0.101-java-android-nativ`.
+- Die Aktion `Haftnotiz` legt nun zusätzlich ein natives Android-Startbildschirm-Widget für den aktuellen Knoten an bzw. aktualisiert vorhandene Widgets, wenn der Launcher kein direktes Pinning unterstützt.
+- Die Textleiste erkennt nun automatisch, ob Baum oder RTF-Box zuletzt aktiv waren: Normal/Fett/Kursiv/Unterstrichen, Schriftgröße, Schriftart und Farben wirken auf den Baumknoten oder auf die RTF-Auswahl.
+- Neuer direkter Button `Normal` und direkter Button `Unterstrichen` in der dritten Leiste.
+- Neuer erster Button `Leer` beginnt nach Speicherabfrage mit einer leeren Datei und leert Baum-/RTF-Anzeige.
+- Android-Schriftfamilien werden sichtbar auf verfügbare Android-Familien gemappt, bleiben aber beim Speichern als Legacy-Fontnamen im RTF erhalten.
+- Laufzeit-Snapshots überschreiben eine vorhandene sinnvolle Wiederherstellung nicht mehr mit einem verdächtig leeren Ein-Knoten-Zustand.
+- Zusätzlicher Schutz verhindert, dass ein transient leeres Editorfeld beim Arbeiten im Baum vorhandenes RTF unbeabsichtigt ersetzt.

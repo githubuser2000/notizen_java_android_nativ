@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">Notizen Java Android Nativ</string>
+    <string name="widget_note_name">Notizen Haftnotiz</string>
     <string name="notizen_ready">Bereit</string>
 </resources>

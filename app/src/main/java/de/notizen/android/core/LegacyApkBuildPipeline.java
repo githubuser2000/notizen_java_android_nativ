@@ -25,7 +25,7 @@ public final class LegacyApkBuildPipeline {
 
     private LegacyApkBuildPipeline() {}
 
-    public static Params defaultParams() { return new Params(34, 34, 23, "de.notizen.android", 100, "1.0.100-java-android-nativ"); }
+    public static Params defaultParams() { return new Params(34, 34, 23, "de.notizen.android", 101, "1.0.101-java-android-nativ"); }
 
     public static List<String> steps(Params p) {
         Params x = p == null ? defaultParams() : p;

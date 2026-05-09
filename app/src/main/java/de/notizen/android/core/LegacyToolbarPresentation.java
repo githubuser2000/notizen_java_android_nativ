@@ -45,6 +45,7 @@ public final class LegacyToolbarPresentation {
     private static final Map<String, ButtonSpec> BY_LABEL;
     static {
         LinkedHashMap<String, ButtonSpec> m = new LinkedHashMap<>();
+        put(m, "Leer", "file_new_empty", "Leere Datei beginnen", "□", "Ctrl+N", "haupt");
         put(m, "Neu", "file_new", "Neue Notizdatei", "＋", "Ctrl+N", "haupt");
         put(m, "Öffnen", "file_open", "ALX-Datei öffnen", "📂", "Ctrl+O", "haupt");
         put(m, "Letzte", "file_recent", "Letzte Datei öffnen", "🕘", "", "haupt");
@@ -73,8 +74,10 @@ public final class LegacyToolbarPresentation {
         put(m, "Vor Ziel", "tree_move_before", "Knoten vor Ziel verschieben", "⇥", "", "elements");
         put(m, "Datum", "insert_date", "Datum einfügen", "📅", "Ctrl+D", "font");
         put(m, "Punkt", "insert_bullet", "Aufzählungspunkt einfügen", "•", "", "font");
+        put(m, "Normal", "format_regular", "Zeichenformat zurücksetzen", "A", "", "font");
         put(m, "Fett", "format_bold", "Fett formatieren", "𝐁", "Ctrl+B", "font");
         put(m, "Kursiv", "format_italic", "Kursiv formatieren", "𝐼", "Ctrl+I", "font");
+        put(m, "Unterstrichen", "format_underline", "Unterstreichen", "U̲", "", "font");
         put(m, "Größer", "font_bigger", "Schrift größer", "A+", "", "font");
         put(m, "Kleiner", "font_smaller", "Schrift kleiner", "A−", "", "font");
         put(m, "Schriftart", "font_family", "Schriftart wählen", "F", "", "font");

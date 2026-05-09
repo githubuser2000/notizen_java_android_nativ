@@ -183,8 +183,11 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.100-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.101-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
+    private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
+    private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
+    private static final String NODE_TITLE_SIZE_ATTR = "androidTitleSizeSp";
 
     private static final int TOOLBAR_BUTTON_DP = 24;
     private static final int TOOLBAR_BUTTON_MARGIN_DP = 1;
@@ -247,6 +250,7 @@ public final class MainActivity extends Activity {
     private boolean titleDirty = false;
     private boolean editorHorizontallyScrolling = false;
     private int treePaneWidthDp = TREE_PANE_DEFAULT_DP;
+    private FormatTarget lastFormatTarget = FormatTarget.RTF_EDITOR;
     private LinearLayout contentLayout;
     private LinearLayout treePane;
     private LinearLayout editorPane;
@@ -256,6 +260,8 @@ public final class MainActivity extends Activity {
     private interface ContinueCallback { void run(); }
     private interface BackgroundCallback<T> { T run() throws Exception; }
     private interface UiCallback<T> { void run(T value); }
+
+    private enum FormatTarget { RTF_EDITOR, TREE_NODE }
 
     private static final class RetainedState {
         NoteDocument document;
@@ -270,13 +276,14 @@ public final class MainActivity extends Activity {
         int selectionStart;
         int selectionEnd;
         int treePaneWidthDp;
+        FormatTarget lastFormatTarget;
     }
 
     private static final class RtfTypefaceSpan extends TypefaceSpan {
         final String familyName;
         RtfTypefaceSpan(String family) {
-            super(family == null || family.trim().isEmpty() ? "sans" : family.trim());
-            familyName = family == null || family.trim().isEmpty() ? "sans" : family.trim();
+            super(androidTypefaceFamily(family));
+            familyName = LegacyRichTextToolbar.normalizeFontFamily(family);
         }
     }
 
@@ -305,6 +312,13 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private static String androidTypefaceFamily(String family) {
+        String clean = LegacyRichTextToolbar.normalizeFontFamily(family).toLowerCase(Locale.ROOT);
+        if (clean.contains("courier") || clean.contains("consolas") || clean.contains("mono")) return "monospace";
+        if (clean.contains("times") || clean.contains("georgia") || clean.contains("serif")) return "serif";
+        return "sans-serif";
+    }
+
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         RetainedState retained = null;
@@ -321,6 +335,7 @@ public final class MainActivity extends Activity {
             currentFtpTarget = retained.currentFtpTarget;
             settings = retained.settings == null ? AndroidSettingsStore.load(this) : retained.settings;
             editorHorizontallyScrolling = retained.editorHorizontallyScrolling;
+            lastFormatTarget = retained.lastFormatTarget == null ? FormatTarget.RTF_EDITOR : retained.lastFormatTarget;
             treePaneWidthDp = retained.treePaneWidthDp > 0 ? LegacySettings.normalizeAndroidTreePaneWidthDp(retained.treePaneWidthDp) : LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
         } else {
             settings = AndroidSettingsStore.load(this);
@@ -366,6 +381,7 @@ public final class MainActivity extends Activity {
         retained.selectionStart = editor == null ? 0 : Math.max(0, editor.getSelectionStart());
         retained.selectionEnd = editor == null ? retained.selectionStart : Math.max(retained.selectionStart, editor.getSelectionEnd());
         retained.treePaneWidthDp = currentTreePaneWidthDp();
+        retained.lastFormatTarget = lastFormatTarget;
         return retained;
     }
 
@@ -409,6 +425,7 @@ public final class MainActivity extends Activity {
         LinearLayout treeToolbar = addToolbarRow(toolbarPanel, "Baum");
         LinearLayout textToolbar = addToolbarRow(toolbarPanel, "Text");
 
+        addButton(fileToolbar, "Leer", v -> confirmDiscardThen(this::newEmptyDocument));
         addButton(fileToolbar, "Neu", v -> confirmDiscardThen(this::newDocument));
         addButton(fileToolbar, "Öffnen", v -> confirmDiscardThen(this::openDocument));
         addButton(fileToolbar, "Letzte", v -> showRecentFiles());
@@ -470,12 +487,14 @@ public final class MainActivity extends Activity {
         addButton(treeToolbar, "Haft weg", v -> clearDesktopNotesInSubtree());
         addButton(treeToolbar, "Wecker", v -> showAlarmDialog());
 
-        addButton(textToolbar, "Datum", v -> insertDate());
-        addButton(textToolbar, "Punkt", v -> insertLegacyBullet());
-        addButton(textToolbar, "Fett", v -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_bold")));
-        addButton(textToolbar, "Kursiv", v -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("format_italic")));
-        addButton(textToolbar, "Größer", v -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("font_bigger")));
-        addButton(textToolbar, "Kleiner", v -> applyRtfFormatAction(LegacyRichTextToolbar.findByAction("font_smaller")));
+        addButton(textToolbar, "Datum", v -> insertDateForActiveTarget());
+        addButton(textToolbar, "Punkt", v -> insertLegacyBulletForActiveTarget());
+        addButton(textToolbar, "Normal", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("format_regular")));
+        addButton(textToolbar, "Fett", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("format_bold")));
+        addButton(textToolbar, "Kursiv", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("format_italic")));
+        addButton(textToolbar, "Unterstrichen", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("format_underline")));
+        addButton(textToolbar, "Größer", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("font_bigger")));
+        addButton(textToolbar, "Kleiner", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("font_smaller")));
         addButton(textToolbar, "Schriftart", v -> showFontFamilyDialog());
         addButton(textToolbar, "Größe", v -> showFontSizeDialog());
         addButton(textToolbar, "RTF Format", v -> showRtfFormatDialog());
@@ -509,13 +528,19 @@ public final class MainActivity extends Activity {
         left.addView(rootTitleView, new LinearLayout.LayoutParams(-1, dp(CONTENT_HEADER_DP)));
         treeList = new ListView(this);
         treeList.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
+        treeList.setFocusable(true);
+        treeList.setFocusableInTouchMode(true);
+        treeList.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setFormatTarget(FormatTarget.TREE_NODE); });
         treeList.setBackground(roundedBackground(Color.WHITE, Color.rgb(220, 225, 232), 8));
         treeList.setDividerHeight(1);
         treeAdapter = new TreeListAdapter(this);
         treeList.setAdapter(treeAdapter);
         final float[] lastTreeTouchX = new float[]{-1f};
         treeList.setOnTouchListener((view, event) -> {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) lastTreeTouchX[0] = event.getX();
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                lastTreeTouchX[0] = event.getX();
+                setFormatTarget(FormatTarget.TREE_NODE);
+            }
             return false;
         });
         treeList.setOnItemClickListener((parent, view, position, id) -> {
@@ -523,9 +548,12 @@ public final class MainActivity extends Activity {
             NoteNode node = row.node;
             int toggleEdge = dp(42 + row.depth * 22);
             if (!node.children.isEmpty() && lastTreeTouchX[0] >= 0f && lastTreeTouchX[0] <= toggleEdge) {
+                setFormatTarget(FormatTarget.TREE_NODE);
                 toggleNodeExpanded(node, true);
             } else {
-                selectNode(node, true);
+                setFormatTarget(FormatTarget.TREE_NODE);
+                treeList.requestFocus();
+                selectNode(node, false);
             }
         });
         treeList.setOnItemLongClickListener((parent, view, position, id) -> {
@@ -555,6 +583,8 @@ public final class MainActivity extends Activity {
         titleEdit.setTextSize(15f);
         titleEdit.setBackground(roundedBackground(Color.rgb(255, 250, 205), Color.rgb(226, 213, 145), 8));
         titleEdit.setPadding(dp(7), 0, dp(7), 0);
+        titleEdit.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setFormatTarget(FormatTarget.TREE_NODE); });
+        titleEdit.setOnTouchListener((view, event) -> { if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setFormatTarget(FormatTarget.TREE_NODE); return false; });
         titleEdit.addTextChangedListener(new SimpleWatcher() {
             @Override public void afterTextChanged(Editable s) {
                 if (loadingEditor || currentNode == null) return;
@@ -576,6 +606,8 @@ public final class MainActivity extends Activity {
         editor.setBackground(roundedBackground(Color.WHITE, Color.rgb(213, 219, 229), 8));
         applyEditorScrollbars();
         editor.setPadding(dp(10), dp(10), dp(10), dp(10));
+        editor.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setFormatTarget(FormatTarget.RTF_EDITOR); });
+        editor.setOnTouchListener((view, event) -> { if (event.getActionMasked() == MotionEvent.ACTION_DOWN) setFormatTarget(FormatTarget.RTF_EDITOR); return false; });
         editor.addTextChangedListener(new SimpleWatcher() {
             @Override public void afterTextChanged(Editable s) {
                 if (loadingEditor) return;
@@ -621,10 +653,23 @@ public final class MainActivity extends Activity {
         try {
             if (captureEditor && Looper.myLooper() == Looper.getMainLooper()) saveCurrentEditorToNode();
             if (!hasRecoverableRuntimeContent(document)) return;
+            if (wouldOverwriteUsefulRuntimeSnapshotWithBlankDocument()) return;
             writeAtomic(runtimeSnapshotFile(), AlxIo.documentToXmlBytes(document));
             writeAtomic(runtimeSnapshotMetaFile(), runtimeSnapshotMetaText().getBytes(StandardCharsets.UTF_8));
         } catch (Exception ignored) {
             // Runtime snapshots must never interrupt editing, saving or shutdown.
+        }
+    }
+
+    private boolean wouldOverwriteUsefulRuntimeSnapshotWithBlankDocument() {
+        try {
+            if (!isBlankSingleNodeDocumentForPrompt(document)) return false;
+            File file = runtimeSnapshotFile();
+            if (!file.isFile() || file.length() <= 0L) return false;
+            NoteDocument old = AlxIo.load(AndroidSettingsStore.readFile(file), "");
+            return old != null && !isBlankSingleNodeDocumentForPrompt(old) && hasRecoverableRuntimeContent(old);
+        } catch (Exception ignored) {
+            return false;
         }
     }
 
@@ -990,6 +1035,17 @@ public final class MainActivity extends Activity {
         AndroidSettingsStore.save(this, settings);
     }
 
+    private void setFormatTarget(FormatTarget target) {
+        if (target != null) lastFormatTarget = target;
+    }
+
+    private boolean shouldFormatTreeTarget() {
+        if (editor != null && editor.hasFocus()) return false;
+        if (treeList != null && treeList.hasFocus()) return true;
+        if (titleEdit != null && titleEdit.hasFocus()) return true;
+        return lastFormatTarget == FormatTarget.TREE_NODE;
+    }
+
     private void markDocumentChanged() {
         if (document != null) document.markChanged();
         if (!loadingEditor) scheduleRuntimeSnapshotSave();
@@ -1023,6 +1079,24 @@ public final class MainActivity extends Activity {
         status("Scrollleisten: " + LegacyScrollbars.label(settings.scrollbarsChoice));
     }
 
+    private void newEmptyDocument() {
+        document = new NoteDocument();
+        document.root = new NoteNode("...", "");
+        document.changed = true;
+        currentUri = null;
+        currentRawFile = null;
+        currentFtpTarget = null;
+        currentDisplayName = "unbenannt.alx";
+        runtimeSnapshotRestored = false;
+        clearRuntimeSnapshotIfBlankStart();
+        currentNode = null;
+        editorDirty = false;
+        titleDirty = false;
+        setFormatTarget(FormatTarget.RTF_EDITOR);
+        selectNode(document.ensureRoot(), false);
+        status("Leere Datei");
+    }
+
     private void newDocument() {
         document = NoteDocument.newDocument();
         currentUri = null;
@@ -1031,8 +1105,10 @@ public final class MainActivity extends Activity {
         currentDisplayName = "unbenannt.alx";
         runtimeSnapshotRestored = false;
         clearRuntimeSnapshotIfBlankStart();
+        currentNode = null;
         editorDirty = false;
         titleDirty = false;
+        setFormatTarget(FormatTarget.RTF_EDITOR);
         selectNode(document.ensureRoot(), false);
         status("Neue Datei");
     }
@@ -1832,6 +1908,196 @@ public final class MainActivity extends Activity {
         status("Legacy-Aufzählungspunkt eingefügt");
     }
 
+    private void insertDateForActiveTarget() {
+        if (shouldFormatTreeTarget()) appendToCurrentNodeTitle(LegacyEditorActions.androidDateInsertText(new Date()).trim());
+        else insertDate();
+    }
+
+    private void insertLegacyBulletForActiveTarget() {
+        if (shouldFormatTreeTarget()) appendToCurrentNodeTitle("•");
+        else insertLegacyBullet();
+    }
+
+    private void appendToCurrentNodeTitle(String value) {
+        if (currentNode == null || value == null || value.isEmpty()) return;
+        saveCurrentEditorToNode();
+        String oldTitle = titleEdit == null ? currentNode.title : titleEdit.getText().toString();
+        String base = oldTitle == null || oldTitle.trim().isEmpty() || "...".equals(oldTitle.trim()) ? "" : oldTitle.trim();
+        currentNode.title = LegacyEditorNodeSync.normalizeTitle(base.isEmpty() ? value : base + " " + value);
+        loadingEditor = true;
+        if (titleEdit != null) {
+            titleEdit.setText(currentNode.title);
+            titleEdit.setSelection(titleEdit.getText().length());
+        }
+        loadingEditor = false;
+        titleDirty = false;
+        markDocumentChanged();
+        rebuildTree();
+        updateTitle();
+    }
+
+    private void applyActiveFormatAction(LegacyRichTextToolbar.ActionSpec spec) {
+        if (shouldFormatTreeTarget()) applyTreeFormatAction(spec);
+        else applyRtfFormatAction(spec);
+    }
+
+    private void applyTreeFormatAction(LegacyRichTextToolbar.ActionSpec spec) {
+        if (spec == null || currentNode == null) return;
+        String action = spec.action == null ? "" : spec.action;
+        if ("legacy_bullet".equals(action)) { appendToCurrentNodeTitle("•"); return; }
+        if ("cycle_scrollbars".equals(action)) { cycleScrollbars(); return; }
+        if ("text_color".equals(action)) { showTreeTextColorPalette(); return; }
+        if ("highlight_color".equals(action)) { showTreeBackgroundPalette(); return; }
+        if ("font_family".equals(action)) { showTreeFontFamilyDialog(); return; }
+        if ("font_size".equals(action)) { showTreeFontSizeDialog(); return; }
+        if ("format_regular".equals(action)) { clearTreeTextFormatting(); return; }
+        if ("format_bold".equals(action)) { addTreeTitleStyle("bold", "Baumtext fett"); return; }
+        if ("format_italic".equals(action)) { addTreeTitleStyle("italic", "Baumtext kursiv"); return; }
+        if ("format_underline".equals(action)) { addTreeTitleStyle("underline", "Baumtext unterstrichen"); return; }
+        if ("format_strike".equals(action)) { addTreeTitleStyle("strike", "Baumtext durchgestrichen"); return; }
+        if ("font_bigger".equals(action)) { applyTreeFontSize(LegacyRichTextToolbar.nextFontSize(currentTreeTitleSize(), +1)); return; }
+        if ("font_smaller".equals(action)) { applyTreeFontSize(LegacyRichTextToolbar.nextFontSize(currentTreeTitleSize(), -1)); return; }
+        if (action.startsWith("align_")) { toast("Ausrichtung betrifft nur die RTF-Box."); return; }
+        status(spec.tooltip == null || spec.tooltip.isEmpty() ? "Baumformat-Aktion" : spec.tooltip);
+    }
+
+    private void addTreeTitleStyle(String style, String message) {
+        if (currentNode == null || style == null || style.isEmpty()) return;
+        String raw = currentNode.extraAttrs.get(NODE_TITLE_STYLE_ATTR);
+        LinkedHashMap<String, Boolean> values = new LinkedHashMap<>();
+        if (raw != null) {
+            for (String part : raw.split(",")) {
+                String clean = part.trim().toLowerCase(Locale.ROOT);
+                if (!clean.isEmpty()) values.put(clean, Boolean.TRUE);
+            }
+        }
+        values.put(style.toLowerCase(Locale.ROOT), Boolean.TRUE);
+        StringBuilder out = new StringBuilder();
+        for (String key : values.keySet()) {
+            if (out.length() > 0) out.append(',');
+            out.append(key);
+        }
+        currentNode.extraAttrs.put(NODE_TITLE_STYLE_ATTR, out.toString());
+        markTreeTextFormatChanged(message);
+    }
+
+    private void clearTreeTextFormatting() {
+        if (currentNode == null) return;
+        currentNode.extraAttrs.remove(NODE_TITLE_STYLE_ATTR);
+        currentNode.extraAttrs.remove(NODE_TITLE_FONT_ATTR);
+        currentNode.extraAttrs.remove(NODE_TITLE_SIZE_ATTR);
+        currentNode.fgArgb = 0;
+        markTreeTextFormatChanged("Baumtext normal");
+    }
+
+    private void showTreeFontFamilyDialog() {
+        if (currentNode == null) return;
+        List<String> families = LegacyRichTextToolbar.legacyFontFamilies();
+        String[] labels = families.toArray(new String[0]);
+        new AlertDialog.Builder(this)
+                .setTitle("Baum-Schriftart")
+                .setItems(labels, (d, which) -> applyTreeFontFamily(families.get(which)))
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void applyTreeFontFamily(String family) {
+        if (currentNode == null) return;
+        currentNode.extraAttrs.put(NODE_TITLE_FONT_ATTR, LegacyRichTextToolbar.normalizeFontFamily(family));
+        markTreeTextFormatChanged("Baum-Schriftart gesetzt");
+    }
+
+    private void showTreeFontSizeDialog() {
+        if (currentNode == null) return;
+        int[] sizes = LegacyRichTextToolbar.legacyFontSizeItems();
+        String[] labels = new String[sizes.length + 1];
+        for (int i = 0; i < sizes.length; i++) labels[i] = sizes[i] + " pt";
+        labels[sizes.length] = "Eigene Größe…";
+        new AlertDialog.Builder(this)
+                .setTitle("Baum-Schriftgröße")
+                .setItems(labels, (d, which) -> {
+                    if (which >= sizes.length) showCustomTreeFontSizeDialog();
+                    else applyTreeFontSize(sizes[which]);
+                })
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void showCustomTreeFontSizeDialog() {
+        if (currentNode == null) return;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(12), 0, dp(12), 0);
+        EditText value = labeledEdit(box, "Baum-Schriftgröße", Integer.toString(currentTreeTitleSize()));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Eigene Baum-Schriftgröße")
+                .setView(box)
+                .setNegativeButton("Abbrechen", null)
+                .setPositiveButton("OK", null)
+                .create();
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            LegacyFontSizeEntry.State state = LegacyFontSizeEntry.onEnter(value.getText().toString(), Integer.toString(currentTreeTitleSize()));
+            value.setText(state.text);
+            value.setSelection(value.getText().length());
+            if (!state.apply) {
+                error("Baum-Schriftgröße", "Bitte eine Zahl zwischen 0 und 99 eingeben.");
+                return;
+            }
+            dialog.dismiss();
+            applyTreeFontSize(state.numericValue);
+        }));
+        dialog.show();
+    }
+
+    private int currentTreeTitleSize() {
+        if (currentNode == null) return 16;
+        try { return LegacyRichTextToolbar.normalizeFontSize(Integer.parseInt(String.valueOf(currentNode.extraAttrs.get(NODE_TITLE_SIZE_ATTR)).trim())); }
+        catch (Exception ignored) { return 16; }
+    }
+
+    private void applyTreeFontSize(int size) {
+        if (currentNode == null) return;
+        int clamped = LegacyRichTextToolbar.normalizeFontSize(size);
+        currentNode.extraAttrs.put(NODE_TITLE_SIZE_ATTR, Integer.toString(clamped));
+        markTreeTextFormatChanged("Baum-Schriftgröße: " + clamped + " pt");
+    }
+
+    private void showTreeTextColorPalette() {
+        String[] labels = new String[LegacyColors.LIGHT_COLOR_ARGB.length + 1];
+        for (int i = 0; i < LegacyColors.LIGHT_COLOR_ARGB.length; i++) labels[i] = i + ": " + LegacyColors.LIGHT_COLOR_NAMES[i] + " " + LegacyColors.toCssRgb(LegacyColors.LIGHT_COLOR_ARGB[i]);
+        labels[labels.length - 1] = "Baum-Textfarbe löschen";
+        new AlertDialog.Builder(this)
+                .setTitle("Baum-Textfarbe")
+                .setItems(labels, (d, which) -> {
+                    if (which >= LegacyColors.LIGHT_COLOR_ARGB.length) applyNodeColor(false, 0);
+                    else applyNodeColor(false, LegacyColors.LIGHT_COLOR_ARGB[which]);
+                })
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void showTreeBackgroundPalette() {
+        String[] labels = new String[LegacyColors.LIGHT_COLOR_ARGB.length + 1];
+        for (int i = 0; i < LegacyColors.LIGHT_COLOR_ARGB.length; i++) labels[i] = i + ": " + LegacyColors.LIGHT_COLOR_NAMES[i] + " " + LegacyColors.toCssRgb(LegacyColors.LIGHT_COLOR_ARGB[i]);
+        labels[labels.length - 1] = "Baum-Hintergrund löschen";
+        new AlertDialog.Builder(this)
+                .setTitle("Baum-Hintergrund")
+                .setItems(labels, (d, which) -> {
+                    if (which >= LegacyColors.LIGHT_COLOR_ARGB.length) applyNodeColor(true, 0);
+                    else applyNodeColor(true, LegacyColors.LIGHT_COLOR_ARGB[which]);
+                })
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void markTreeTextFormatChanged(String message) {
+        markDocumentChanged();
+        rebuildTree();
+        if (treeAdapter != null) treeAdapter.setSelected(currentNode);
+        updateTitle();
+        status(message == null || message.isEmpty() ? "Baumtext formatiert" : message);
+    }
+
 
     private void showRtfFormatDialog() {
         if (currentNode == null) return;
@@ -1845,7 +2111,7 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < actions.size(); i++) labels[i] = LegacyRichTextToolbar.iconOnlyDescription(actions.get(i));
         new AlertDialog.Builder(this)
                 .setTitle("RTF-Formatierung")
-                .setItems(labels, (d, which) -> applyRtfFormatAction(actions.get(which)))
+                .setItems(labels, (d, which) -> applyActiveFormatAction(actions.get(which)))
                 .setNegativeButton("Abbrechen", null)
                 .show();
     }
@@ -1970,10 +2236,14 @@ public final class MainActivity extends Activity {
 
     private void showFontFamilyDialog() {
         if (currentNode == null || editor == null) return;
+        if (shouldFormatTreeTarget()) {
+            showTreeFontFamilyDialog();
+            return;
+        }
         List<String> families = LegacyRichTextToolbar.legacyFontFamilies();
         String[] labels = families.toArray(new String[0]);
         new AlertDialog.Builder(this)
-                .setTitle("Schriftart")
+                .setTitle("RTF-Schriftart")
                 .setItems(labels, (d, which) -> applyFontFamilyToSelection(families.get(which)))
                 .setNegativeButton("Abbrechen", null)
                 .show();
@@ -1981,12 +2251,16 @@ public final class MainActivity extends Activity {
 
     private void showFontSizeDialog() {
         if (currentNode == null || editor == null) return;
+        if (shouldFormatTreeTarget()) {
+            showTreeFontSizeDialog();
+            return;
+        }
         int[] sizes = LegacyRichTextToolbar.legacyFontSizeItems();
         String[] labels = new String[sizes.length + 1];
         for (int i = 0; i < sizes.length; i++) labels[i] = sizes[i] + " pt";
         labels[sizes.length] = "Eigene Größe…";
         new AlertDialog.Builder(this)
-                .setTitle("Schriftgröße")
+                .setTitle("RTF-Schriftgröße")
                 .setItems(labels, (d, which) -> {
                     if (which >= sizes.length) {
                         showCustomFontSizeDialog();
@@ -2332,6 +2606,10 @@ public final class MainActivity extends Activity {
 
     private void showColorDialog() {
         if (currentNode == null) return;
+        if (shouldFormatTreeTarget()) {
+            showNodeColorDialog();
+            return;
+        }
         String[] palette = LegacyColorDialogModel.paletteLabels();
         String[] labels = new String[palette.length + 4];
         for (int i = 0; i < palette.length; i++) labels[i] = palette[i];
@@ -2387,8 +2665,22 @@ public final class MainActivity extends Activity {
         status(background ? "Hintergrund gesetzt" : "Textfarbe gesetzt");
     }
 
+    private void requestAndroidWidgetForCurrentNode() {
+        if (currentNode == null) return;
+        String title = safeTitle(currentNode);
+        String text = RtfUtils.rtfToPlainText(currentNode.rtf == null ? "" : currentNode.rtf);
+        int bg = Color.rgb(255, 250, 205);
+        int fg = Color.rgb(30, 30, 30);
+        if (currentNode.desktopNote != null && currentNode.desktopNote.argb != null) bg = 0xff000000 | (currentNode.desktopNote.argb & 0x00ffffff);
+        else if (currentNode.bgArgb != 0) bg = 0xff000000 | (currentNode.bgArgb & 0x00ffffff);
+        if (currentNode.fgArgb != 0) fg = 0xff000000 | (currentNode.fgArgb & 0x00ffffff);
+        NoteWidgetProvider.requestPinOrUpdate(this, title, text, bg, fg);
+    }
+
     private void showDesktopNoteDialog() {
         if (currentNode == null) return;
+        saveCurrentEditorToNode();
+        requestAndroidWidgetForCurrentNode();
         DesktopNoteState existing = currentNode.desktopNote == null ? new DesktopNoteState() : currentNode.desktopNote.copy();
         if (existing.argb == null) existing.argb = LegacyColors.legacyLightColorArgb(null);
         LinearLayout box = new LinearLayout(this);
@@ -2987,6 +3279,7 @@ public final class MainActivity extends Activity {
             treeList.smoothScrollToPosition(pos);
         }
         if (focusEditor) {
+            setFormatTarget(FormatTarget.RTF_EDITOR);
             editor.requestFocus();
         }
     }
@@ -2997,7 +3290,14 @@ public final class MainActivity extends Activity {
         String oldTitle = LegacyEditorNodeSync.normalizeTitle(currentNode.title);
         String oldRtf = currentNode.rtf == null ? "" : currentNode.rtf;
         String nextTitle = titleDirty ? LegacyEditorNodeSync.normalizeTitle(titleEdit == null ? currentNode.title : titleEdit.getText().toString()) : oldTitle;
-        String nextRtf = editorDirty ? editorContentToRtf() : oldRtf;
+        String nextRtf = oldRtf;
+        if (editorDirty) {
+            if (shouldIgnoreTransientBlankEditorOverwrite(oldRtf)) {
+                editorDirty = false;
+            } else {
+                nextRtf = editorContentToRtf();
+            }
+        }
         boolean changed = !oldTitle.equals(nextTitle) || !oldRtf.equals(nextRtf);
         if (changed) {
             currentNode.title = nextTitle;
@@ -3007,6 +3307,15 @@ public final class MainActivity extends Activity {
         }
         editorDirty = false;
         titleDirty = false;
+    }
+
+    private boolean shouldIgnoreTransientBlankEditorOverwrite(String oldRtf) {
+        if (editor == null || editor.getText() == null) return rtfHasVisibleText(oldRtf);
+        if (!rtfHasVisibleText(oldRtf)) return false;
+        String visible = editor.getText().toString();
+        if (visible != null && !visible.trim().isEmpty()) return false;
+        if (editor.hasFocus() || lastFormatTarget == FormatTarget.RTF_EDITOR) return false;
+        return true;
     }
 
     private void rebuildTree() {
