@@ -109,6 +109,7 @@ import de.notizen.android.core.LegacyDesktopNoteContextMenu;
 import de.notizen.android.core.LegacyDialogModels;
 import de.notizen.android.core.LegacyEditorActions;
 import de.notizen.android.core.LegacyFeedback;
+import de.notizen.android.core.LegacyFreshStartModel;
 import de.notizen.android.core.LegacyFontSizeEntry;
 import de.notizen.android.core.LegacyEditorNodeSync;
 import de.notizen.android.core.LegacySearchSession;
@@ -183,7 +184,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.102-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.103-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -230,6 +231,7 @@ public final class MainActivity extends Activity {
     private String internalEditorClipboardPlain = "";
     private LegacySettings settings = new LegacySettings();
     private FtpTarget currentFtpTarget;
+    private ContinueCallback pendingAfterSaveAsCallback;
     private ExecutorService ioExecutor;
     private Handler mainHandler;
     private final SimpleDateFormat alarmDateFormat = new SimpleDateFormat(LegacyAlarmDialogModel.DATE_PATTERN, Locale.GERMANY);
@@ -1108,37 +1110,48 @@ public final class MainActivity extends Activity {
     }
 
     private void newEmptyDocument() {
-        document = new NoteDocument();
-        document.root = new NoteNode("...", "");
-        document.changed = true;
-        currentUri = null;
-        currentRawFile = null;
-        currentFtpTarget = null;
-        currentDisplayName = "unbenannt.alx";
-        runtimeSnapshotRestored = false;
-        clearRuntimeSnapshotIfBlankStart();
-        currentNode = null;
-        editorDirty = false;
-        titleDirty = false;
-        setFormatTarget(FormatTarget.RTF_EDITOR);
-        selectNode(document.ensureRoot(), false);
-        status("Leere Datei");
+        // Entspricht Notizen .NET: alte TreeView vollständig weg, danach ein leerer Startknoten ohne RTF.
+        resetToFreshStartDocument("Leere Datei");
     }
 
     private void newDocument() {
-        document = NoteDocument.newDocument();
+        resetToFreshStartDocument("Neue Datei");
+    }
+
+    private void resetToFreshStartDocument(String message) {
+        currentNode = null;
+        loadingEditor = true;
+        clearVisibleDocumentViewsForFreshStart();
+        document = LegacyFreshStartModel.newFreshStartDocument();
+        document.displayName = "unbenannt.alx";
         currentUri = null;
         currentRawFile = null;
         currentFtpTarget = null;
         currentDisplayName = "unbenannt.alx";
         runtimeSnapshotRestored = false;
-        clearRuntimeSnapshotIfBlankStart();
-        currentNode = null;
         editorDirty = false;
         titleDirty = false;
+        internalEditorClipboard = null;
+        internalEditorClipboardPlain = "";
         setFormatTarget(FormatTarget.RTF_EDITOR);
+        clearRuntimeSnapshotIfBlankStart();
+        loadingEditor = false;
+        rebuildTree();
         selectNode(document.ensureRoot(), false);
-        status("Neue Datei");
+        updateTitle();
+        scheduleRuntimeSnapshotSave();
+        status(message == null ? "Neue Datei" : message);
+    }
+
+    private void clearVisibleDocumentViewsForFreshStart() {
+        if (treeAdapter != null) {
+            treeAdapter.setRows(new ArrayList<>());
+            treeAdapter.setSelected(null);
+        }
+        if (treeList != null) treeList.clearChoices();
+        if (rootTitleView != null) rootTitleView.setText("");
+        if (titleEdit != null) titleEdit.setText("");
+        if (editor != null) editor.setText("");
     }
 
     private void openDocument() {
@@ -1182,7 +1195,12 @@ public final class MainActivity extends Activity {
     }
 
     private void saveDocumentAs() {
+        saveDocumentAs(null);
+    }
+
+    private void saveDocumentAs(ContinueCallback afterSave) {
         saveCurrentEditorToNode();
+        pendingAfterSaveAsCallback = afterSave;
         startActivityForResult(intentForDialog(LegacyFileDialogModel.saveAlx(currentDialogDirectory(), ensureAlxName(currentDisplayName))), REQ_SAVE_AS);
     }
 
@@ -1524,6 +1542,10 @@ public final class MainActivity extends Activity {
     }
 
     private void saveDocumentToFtp(FtpTarget target) {
+        saveDocumentToFtp(target, null);
+    }
+
+    private void saveDocumentToFtp(FtpTarget target, ContinueCallback afterSave) {
         if (target == null) return;
         saveCurrentEditorToNode();
         final byte[] payload;
@@ -1550,6 +1572,7 @@ public final class MainActivity extends Activity {
             updateTitle();
             saveRuntimeSnapshotNow(false);
             status("FTP gespeichert: " + result.safeDisplayUrl());
+            if (afterSave != null && !document.changed) afterSave.run();
         });
     }
 
@@ -4224,6 +4247,7 @@ public final class MainActivity extends Activity {
                 "v71 ergänzt: Runtime-/Launcher-Identität, Layoutdiagnose und Paketberechtigungsmodell.\n\n" +
                 "v83 ergänzt: Dialog-Fokusmodell, ToolStrip-Toggles, Hauptfenster-Chrome, Autosave-Tick, CText-Semantik und Termux-APK-Buildplan.\n\n" +
                 "v95 ergänzt: font_set-Entscheidungsmodell, Move-/Resize-Mausmodell und ALX-Stream-Pipeline für lokale Datei, SAF und FTP.\n\n" +
+                "v103 korrigiert: der erste Leer/Neu-Start leert den Android-Baum wirklich, baut den Adapter neu auf und setzt die RTF-Box ohne alte Knotenreste zurück; Speichern-vorher läuft nach SAF-Speichern automatisch weiter.\n\n" +
                 "Bewusst mobil angepasst: Android nutzt keinen Windows-Tray und keine frei schwebenden Desktop-Haftnotiz-Fenster. Diese Metadaten bleiben im ALX erhalten und können mobil editiert werden. RTF wird als lesbarer Text angezeigt; vorhandenes RTF bleibt erhalten, solange die Notiz nicht bearbeitet wird.\n\n" +
                 "Lizenz: GPLv3 wie die Ausgangsarchive.";
         new AlertDialog.Builder(this).setTitle(about.title + " " + about.version).setMessage(msg).setPositiveButton(about.closeLabel, null).show();
@@ -4262,12 +4286,12 @@ public final class MainActivity extends Activity {
             return;
         }
         if (currentFtpTarget != null) {
-            saveDocumentToFtp(currentFtpTarget);
-            status("FTP-Speichern gestartet; Aktion danach erneut ausführen.");
+            saveDocumentToFtp(currentFtpTarget, callback);
+            status("FTP-Speichern gestartet; Aktion läuft danach weiter.");
             return;
         }
-        saveDocumentAs();
-        status("Bitte nach dem Speichern die Aktion erneut ausführen.");
+        saveDocumentAs(callback);
+        status("Bitte speichern; die Aktion läuft danach automatisch weiter.");
     }
 
     @Override public boolean onKeyDown(int keyCode, KeyEvent event) {
@@ -4413,13 +4437,22 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            if (requestCode == REQ_SAVE_AS && pendingAfterSaveAsCallback != null) {
+                pendingAfterSaveAsCallback = null;
+                status("Speichern abgebrochen; Aktion abgebrochen");
+            }
+            return;
+        }
         Uri uri = data.getData();
         if (requestCode == REQ_OPEN) {
             openUri(uri, null);
         } else if (requestCode == REQ_SAVE_AS) {
+            ContinueCallback afterSave = pendingAfterSaveAsCallback;
+            pendingAfterSaveAsCallback = null;
             takeReadWritePermission(uri);
             writeDocumentToUri(uri, queryDisplayName(uri), true);
+            if (afterSave != null && !document.changed) afterSave.run();
         } else if (requestCode == REQ_EXPORT_TEXT || requestCode == REQ_EXPORT_TEXT_ANSI || requestCode == REQ_EXPORT_TEXT_UNICODE) {
             try {
                 writeAll(uri, pendingExportTextBytes == null ? (pendingExportText == null ? new byte[0] : pendingExportText.getBytes(java.nio.charset.StandardCharsets.UTF_8)) : pendingExportTextBytes);

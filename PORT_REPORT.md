@@ -357,3 +357,10 @@ Neu hinzugekommen sind `LegacyFontSetModel`, `LegacyWindowMoveResizeModel` und `
 - Zwischenablagen werden sauber getrennt, damit eine später kopierte Textauswahl keinen alten Knoten mehr aus der internen Knoten-Zwischenablage einfügt.
 - Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
 
+
+## v103
+
+- Version erhöht auf `versionCode 103` / `versionName 1.0.103-java-android-nativ`.
+- Der erste `Leer`/Neue-Datei-Start baut den Baumadapter nach dem Ersetzen des Dokuments neu auf, löscht sichtbare alte Baumzeilen und setzt RTF-/Titel-Felder leer zurück.
+- Speichern-vorher läuft bei SAF-`Speichern unter` und FTP-Speichern nach erfolgreichem Speichern automatisch mit der geplanten Aktion weiter.
+- ALX-Baumzustand bleibt weiterhin über `isexpanded="True/False"` je Knoten gespeichert und wird beim Laden rekursiv wiederhergestellt.
