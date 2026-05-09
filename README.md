@@ -382,3 +382,15 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Die einzelnen Toolbar-Buttons bekommen keine konkurrierenden Toolbar-Zoom-Touchlistener mehr; dadurch können Gesten über mehrere Buttons/Reihen hinweg erkannt werden.
 - Toolbar-Größenänderungen werden gebündelt und Config-Speichern wird verzögert ausgeführt, damit beim Spreizen/Kneifen kein UI-Stau/ANR entsteht.
 - Schutz gegen fehlerhafte Android-Touchereignisse ergänzt: ScaleGestureDetector-Ausnahmen werden abgefangen, statt die App zu beenden.
+
+
+## v106
+
+- Version erhöht auf `versionCode 106` / `versionName 1.0.106-java-android-nativ`.
+- Die dritte Textleiste wurde weiter an Notizen .NET/PyQt angenähert: direkte Buttons für `Rückgängig`, `Wiederholen`, `Durchgestrichen`, `Textfarbe`, `Hintergrund`, `Links`, `Mitte`, `Rechts` und `Blocksatz` sind ergänzt.
+- Formatbuttons erkennen den aktiven Zielbereich und markieren ihren aktuellen Zustand: Baumformatierung wirkt auf den selektierten Knoten, RTF-Formatierung auf Cursor/Auswahl im Editor.
+- RTF-Undo/Redo speichert Text, Auswahl und wichtige Android-Spans, damit reine Formatänderungen rückgängig gemacht und wiederholt werden können.
+- Eine einklappbare PyQt-artige Schnellsuchleiste wurde ergänzt: `Weiter`, `Alle Treffer`, Suche im aktuellen Teilbaum oder ganzen Baum, optional Titel, ganze Wörter und Groß-/Kleinschreibung.
+- Treffer springen den passenden Baumknoten an, öffnen dessen Vorfahren und markieren die Fundstelle im Titel oder in der RTF-Box.
+- Die Suchleisten-Einstellung wird bei Drehung im Aktivitätszustand erhalten.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.

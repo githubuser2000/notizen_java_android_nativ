@@ -33,6 +33,8 @@ public final class LegacyShortcuts {
                 case "c": action = "copy"; break;
                 case "v": action = "paste"; break;
                 case "x": action = "cut"; break;
+                case "z": action = "undo"; break;
+                case "y": action = "redo"; break;
                 case "u": action = "rename"; break;
                 case "f": action = "search"; break;
                 case "+":

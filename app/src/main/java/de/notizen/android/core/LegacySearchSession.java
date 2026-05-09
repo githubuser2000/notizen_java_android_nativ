@@ -75,19 +75,8 @@ public final class LegacySearchSession {
                                           boolean wholeWords, boolean caseSensitive, boolean includeTitles) {
         if (term == null || term.isEmpty()) return Collections.emptyList();
         if (allNodes) return Search.searchNodes(root, term, wholeWords, caseSensitive, includeTitles);
-        ArrayList<SearchResult> out = new ArrayList<>();
         NoteNode node = currentNode == null ? root : currentNode;
-        if (node == null) return out;
-        if (includeTitles) {
-            String title = node.title == null ? "" : node.title;
-            for (int[] span : Search.findInText(title, term, wholeWords, caseSensitive)) {
-                out.add(new SearchResult(node, span[0], span[1] - span[0], true, Search.snippet(title, span[0], span[1] - span[0])));
-            }
-        }
-        String plain = RtfUtils.rtfToPlainText(node.rtf == null ? "" : node.rtf);
-        for (int[] span : Search.findInText(plain, term, wholeWords, caseSensitive)) {
-            out.add(new SearchResult(node, span[0], span[1] - span[0], false, Search.snippet(plain, span[0], span[1] - span[0])));
-        }
-        return out;
+        if (node == null) return new ArrayList<SearchResult>();
+        return Search.searchSubtree(node, term, wholeWords, caseSensitive, includeTitles);
     }
 }

@@ -86,6 +86,7 @@ import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -150,6 +151,8 @@ import de.notizen.android.core.LegacyRecentMenu;
 import de.notizen.android.core.LegacyNodeExport;
 import de.notizen.android.core.LegacyPrintLayout;
 import de.notizen.android.core.LegacyRichTextToolbar;
+import de.notizen.android.core.LegacyQuickSearchBar;
+import de.notizen.android.core.LegacyRtfUndoModel;
 import de.notizen.android.core.LegacyRichTextBoxSemantics;
 import de.notizen.android.core.LegacyToolbarPresentation;
 import de.notizen.android.core.LegacyRtfSelectionFormatter;
@@ -187,7 +190,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.105-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.106-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -206,6 +209,8 @@ public final class MainActivity extends Activity {
     private static final int MAX_EMBED_IMAGE_LONG_EDGE_PX = LegacyTouchZoomModel.MAX_EMBED_IMAGE_LONG_EDGE_PX;
     private static final int MAX_EMBEDDED_IMAGE_BYTES = LegacyTouchZoomModel.MAX_EMBEDDED_IMAGE_BYTES;
     private static final int IMAGE_JPEG_QUALITY = 82;
+    private static final long EDITOR_TYPING_UNDO_INTERVAL_MS = 900L;
+    private static final int MAX_QUICK_SEARCH_RESULTS = 1000;
     private static final long RUNTIME_SNAPSHOT_DELAY_MS = 700L;
     private static final long UI_ZOOM_SAVE_DELAY_MS = 450L;
     private static final String RUNTIME_SNAPSHOT_FILE = "notizen.runtime-snapshot.xml";
@@ -247,12 +252,24 @@ public final class MainActivity extends Activity {
     private Handler mainHandler;
     private final SimpleDateFormat alarmDateFormat = new SimpleDateFormat(LegacyAlarmDialogModel.DATE_PATTERN, Locale.GERMANY);
     private final LegacySearchSession searchSession = new LegacySearchSession();
+    private final ArrayList<EditorHistoryEntry> editorUndoStack = new ArrayList<>();
+    private final ArrayList<EditorHistoryEntry> editorRedoStack = new ArrayList<>();
+    private final ArrayList<SearchResult> quickSearchResults = new ArrayList<>();
+    private int quickSearchIndex = -1;
+    private LegacyQuickSearchBar.Scope quickSearchScope = LegacyQuickSearchBar.Scope.CURRENT_SUBTREE;
 
     private TreeListAdapter treeAdapter;
     private ListView treeList;
     private TextView rootTitleView;
     private EditText titleEdit;
     private EditText editor;
+    private LinearLayout quickSearchBar;
+    private EditText quickSearchInput;
+    private CheckBox quickSearchWholeTree;
+    private CheckBox quickSearchWholeWords;
+    private CheckBox quickSearchCaseSensitive;
+    private CheckBox quickSearchIncludeTitles;
+    private TextView quickSearchStatus;
     private WebView pendingPrintView;
     private Runnable autosaveRunnable;
     private Runnable runtimeSnapshotRunnable;
@@ -284,6 +301,11 @@ public final class MainActivity extends Activity {
     private boolean treePinchActive = false;
     private boolean toolbarPinchActive = false;
     private boolean headerPinchActive = false;
+    private boolean editorHistoryRestoring = false;
+    private boolean editorHistorySnapshotLocked = false;
+    private boolean formatToolbarUpdateScheduled = false;
+    private long lastEditorTypingUndoAt = 0L;
+    private final Map<String, TextView> textToolbarActionButtons = new LinkedHashMap<>();
 
     private interface PasswordCallback { void onPassword(String password); }
     private interface ContinueCallback { void run(); }
@@ -312,6 +334,12 @@ public final class MainActivity extends Activity {
         float headerTextSp;
         FormatTarget lastFormatTarget;
         ActivePane lastActivePane;
+        String quickSearchTerm;
+        boolean quickSearchWholeTree;
+        boolean quickSearchWholeWords;
+        boolean quickSearchCaseSensitive;
+        boolean quickSearchIncludeTitles;
+        boolean quickSearchVisible;
     }
 
     /**
@@ -341,6 +369,82 @@ public final class MainActivity extends Activity {
             if (consumeForZoom) return true;
             return super.dispatchTouchEvent(event);
         }
+    }
+
+    private final class TrackingEditText extends EditText {
+        TrackingEditText(Context context) { super(context); }
+        @Override protected void onSelectionChanged(int selStart, int selEnd) {
+            super.onSelectionChanged(selStart, selEnd);
+            if (MainActivity.this.editor == this || MainActivity.this.titleEdit == this) scheduleFormatToolbarStateUpdate();
+        }
+    }
+
+    private static final class EditorHistoryEntry {
+        final SpannableStringBuilder text;
+        final int selectionStart;
+        final int selectionEnd;
+        final String signature;
+
+        EditorHistoryEntry(CharSequence text, int selectionStart, int selectionEnd) {
+            this.text = new SpannableStringBuilder(text == null ? "" : text);
+            int len = this.text.length();
+            this.selectionStart = Math.max(0, Math.min(selectionStart, len));
+            this.selectionEnd = Math.max(0, Math.min(selectionEnd, len));
+            this.signature = buildSignature(this.text);
+        }
+
+        private static String buildSignature(SpannableStringBuilder text) {
+            if (text == null) return "";
+            ArrayList<String> parts = new ArrayList<>();
+            int len = text.length();
+            Object[] spans = text.getSpans(0, len, Object.class);
+            for (Object span : spans) {
+                if (span == null) continue;
+                String detail = spanDetail(span);
+                if (detail.isEmpty()) continue;
+                parts.add(text.getSpanStart(span) + ":" + text.getSpanEnd(span) + ":" + text.getSpanFlags(span) + ":" + detail);
+            }
+            Collections.sort(parts);
+            StringBuilder out = new StringBuilder(text.toString());
+            out.append("\n@@spans=");
+            for (String part : parts) out.append(part).append('|');
+            return out.toString();
+        }
+
+        private static String spanDetail(Object span) {
+            if (span instanceof StyleSpan) return "style:" + ((StyleSpan) span).getStyle();
+            if (span instanceof UnderlineSpan) return "underline";
+            if (span instanceof StrikethroughSpan) return "strike";
+            if (span instanceof ForegroundColorSpan) return "fg:" + ((ForegroundColorSpan) span).getForegroundColor();
+            if (span instanceof BackgroundColorSpan) return "bg:" + ((BackgroundColorSpan) span).getBackgroundColor();
+            if (span instanceof AbsoluteSizeSpan) return "size:" + ((AbsoluteSizeSpan) span).getSize() + ":" + ((AbsoluteSizeSpan) span).getDip();
+            if (span instanceof RtfTypefaceSpan) return "font:" + ((RtfTypefaceSpan) span).familyName;
+            if (span instanceof SuperscriptSpan) return "super";
+            if (span instanceof SubscriptSpan) return "sub";
+            if (span instanceof URLSpan) return "url:" + ((URLSpan) span).getURL();
+            if (span instanceof RtfParagraphAlignmentSpan) return "align:" + ((RtfParagraphAlignmentSpan) span).legacyAlign + ":" + ((RtfParagraphAlignmentSpan) span).getAlignment();
+            if (span instanceof AlignmentSpan) return "align:" + ((AlignmentSpan) span).getAlignment();
+            if (span instanceof LeadingMarginSpan.Standard) return "margin:" + ((LeadingMarginSpan.Standard) span).getLeadingMargin(true) + ":" + ((LeadingMarginSpan.Standard) span).getLeadingMargin(false);
+            if (span instanceof RtfImageSpan) {
+                RtfImageSpan image = (RtfImageSpan) span;
+                return "image:" + image.mimeType + ":" + image.imageData.length + ":" + image.widthTwips + ":" + image.heightTwips + ":" + image.rawRtf.hashCode();
+            }
+            if (span instanceof RtfRawSpan) {
+                RtfRawSpan raw = (RtfRawSpan) span;
+                return "raw:" + raw.kind + ":" + raw.rawRtf.length() + ":" + raw.rawRtf.hashCode();
+            }
+            return "";
+        }
+    }
+
+    private static final class RtfParagraphAlignmentSpan implements AlignmentSpan {
+        final Layout.Alignment alignment;
+        final String legacyAlign;
+        RtfParagraphAlignmentSpan(Layout.Alignment alignment, String legacyAlign) {
+            this.alignment = alignment == null ? Layout.Alignment.ALIGN_NORMAL : alignment;
+            this.legacyAlign = legacyAlign == null ? "" : legacyAlign;
+        }
+        @Override public Layout.Alignment getAlignment() { return alignment; }
     }
 
     private static final class RtfTypefaceSpan extends TypefaceSpan {
@@ -439,6 +543,7 @@ public final class MainActivity extends Activity {
         mainHandler = new Handler(Looper.getMainLooper());
         installCrashSnapshotHandler();
         buildUi();
+        if (retained != null) restoreQuickSearchUi(retained);
         requestNotificationPermissionIfUseful();
         if (retained != null) {
             NoteNode restored = currentNode == null ? document.ensureRoot() : currentNode;
@@ -480,7 +585,26 @@ public final class MainActivity extends Activity {
         retained.headerTextSp = headerTextSp;
         retained.lastFormatTarget = lastFormatTarget;
         retained.lastActivePane = lastActivePane;
+        retained.quickSearchTerm = quickSearchInput == null ? searchSession.cachedTerm() : quickSearchInput.getText().toString();
+        retained.quickSearchWholeTree = quickSearchWholeTree != null && quickSearchWholeTree.isChecked();
+        retained.quickSearchWholeWords = quickSearchWholeWords != null && quickSearchWholeWords.isChecked();
+        retained.quickSearchCaseSensitive = quickSearchCaseSensitive != null && quickSearchCaseSensitive.isChecked();
+        retained.quickSearchIncludeTitles = quickSearchIncludeTitles == null || quickSearchIncludeTitles.isChecked();
+        retained.quickSearchVisible = quickSearchBar != null && quickSearchBar.getVisibility() == View.VISIBLE;
         return retained;
+    }
+
+    private void restoreQuickSearchUi(RetainedState retained) {
+        if (retained == null) return;
+        if (quickSearchInput != null && retained.quickSearchTerm != null) {
+            quickSearchInput.setText(retained.quickSearchTerm);
+            quickSearchInput.setSelection(quickSearchInput.getText().length());
+        }
+        if (quickSearchWholeTree != null) quickSearchWholeTree.setChecked(retained.quickSearchWholeTree);
+        if (quickSearchWholeWords != null) quickSearchWholeWords.setChecked(retained.quickSearchWholeWords);
+        if (quickSearchCaseSensitive != null) quickSearchCaseSensitive.setChecked(retained.quickSearchCaseSensitive);
+        if (quickSearchIncludeTitles != null) quickSearchIncludeTitles.setChecked(retained.quickSearchIncludeTitles);
+        if (quickSearchBar != null) quickSearchBar.setVisibility(retained.quickSearchVisible ? View.VISIBLE : View.GONE);
     }
 
     @Override protected void onPause() {
@@ -594,14 +718,23 @@ public final class MainActivity extends Activity {
 
         addButton(textToolbar, "Datum", v -> insertDateForActiveTarget());
         addButton(textToolbar, "Punkt", v -> insertLegacyBulletForActiveTarget());
-        addButton(textToolbar, "Normal", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("format_regular")));
-        addButton(textToolbar, "Fett", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("format_bold")));
-        addButton(textToolbar, "Kursiv", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("format_italic")));
-        addButton(textToolbar, "Unterstrichen", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("format_underline")));
-        addButton(textToolbar, "Größer", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("font_bigger")));
-        addButton(textToolbar, "Kleiner", v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction("font_smaller")));
-        addButton(textToolbar, "Schriftart", v -> showFontFamilyDialog());
-        addButton(textToolbar, "Größe", v -> showFontSizeDialog());
+        addButton(textToolbar, "Rückgängig", v -> undoForActiveTarget());
+        addButton(textToolbar, "Wiederholen", v -> redoForActiveTarget());
+        addFormatButton(textToolbar, "Normal", "format_regular");
+        addFormatButton(textToolbar, "Fett", "format_bold");
+        addFormatButton(textToolbar, "Kursiv", "format_italic");
+        addFormatButton(textToolbar, "Unterstrichen", "format_underline");
+        addFormatButton(textToolbar, "Durchgestrichen", "format_strike");
+        addFormatButton(textToolbar, "Textfarbe", "text_color");
+        addFormatButton(textToolbar, "Hintergrund", "highlight_color");
+        addFormatButton(textToolbar, "Links", "align_left");
+        addFormatButton(textToolbar, "Mitte", "align_center");
+        addFormatButton(textToolbar, "Rechts", "align_right");
+        addFormatButton(textToolbar, "Blocksatz", "align_justify");
+        addFormatButton(textToolbar, "Größer", "font_bigger");
+        addFormatButton(textToolbar, "Kleiner", "font_smaller");
+        addFormatButton(textToolbar, "Schriftart", "font_family");
+        addFormatButton(textToolbar, "Größe", "font_size");
         addButton(textToolbar, "RTF Format", v -> showRtfFormatDialog());
         addButton(textToolbar, "Scroll", v -> cycleScrollbars());
         addButton(textToolbar, "Bild", v -> insertImage());
@@ -610,6 +743,9 @@ public final class MainActivity extends Activity {
         addButton(textToolbar, "TXT Import", v -> importTextIntoCurrent());
         addButton(textToolbar, "RTF Import", v -> importRtfIntoCurrent());
         addButton(textToolbar, "Farben", v -> showColorDialog());
+
+        quickSearchBar = createQuickSearchBar();
+        root.addView(quickSearchBar, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout content = new LinearLayout(this);
         contentLayout = content;
@@ -683,7 +819,7 @@ public final class MainActivity extends Activity {
         LinearLayout right = new LinearLayout(this);
         editorPane = right;
         right.setOrientation(LinearLayout.VERTICAL);
-        titleEdit = new EditText(this);
+        titleEdit = new TrackingEditText(this);
         titleEdit.setSingleLine(true);
         titleEdit.setIncludeFontPadding(false);
         titleEdit.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
@@ -709,7 +845,7 @@ public final class MainActivity extends Activity {
         });
         right.addView(titleEdit, new LinearLayout.LayoutParams(-1, dp(CONTENT_HEADER_DP)));
 
-        editor = new EditText(this);
+        editor = new TrackingEditText(this);
         editor.setTextSize(17f);
         editor.setGravity(Gravity.TOP | Gravity.START);
         editor.setMinLines(12);
@@ -724,11 +860,16 @@ public final class MainActivity extends Activity {
             return handleEditorPinchTouch(event);
         });
         editor.addTextChangedListener(new SimpleWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+                if (!loadingEditor && !editorHistoryRestoring) maybePushEditorTypingUndoSnapshot();
+            }
             @Override public void afterTextChanged(Editable s) {
                 if (loadingEditor) return;
+                if (!editorHistoryRestoring) editorRedoStack.clear();
                 editorDirty = true;
                 markDocumentChanged();
                 updateTitle();
+                scheduleFormatToolbarStateUpdate();
             }
         });
         right.addView(editor, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -1122,7 +1263,7 @@ public final class MainActivity extends Activity {
         return row;
     }
 
-    private void addButton(LinearLayout toolbar, String label, View.OnClickListener listener) {
+    private TextView addButton(LinearLayout toolbar, String label, View.OnClickListener listener) {
         LegacyToolbarPresentation.ButtonSpec spec = LegacyToolbarPresentation.forLabel(label);
         TextView b = new TextView(this);
         b.setText(spec.displayText(true));
@@ -1148,6 +1289,99 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(toolbarButtonDp), dp(toolbarButtonDp));
         params.setMargins(dp(TOOLBAR_BUTTON_MARGIN_DP), dp(1), dp(TOOLBAR_BUTTON_MARGIN_DP), dp(1));
         toolbar.addView(b, params);
+        return b;
+    }
+
+    private void addFormatButton(LinearLayout toolbar, String label, String action) {
+        TextView button = addButton(toolbar, label, v -> applyActiveFormatAction(LegacyRichTextToolbar.findByAction(action)));
+        if (action != null && !action.isEmpty()) textToolbarActionButtons.put(action, button);
+    }
+
+    private LinearLayout createQuickSearchBar() {
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setPadding(dp(4), dp(2), dp(4), dp(2));
+        outer.setBackgroundColor(Color.rgb(248, 250, 253));
+        outer.setVisibility(View.GONE);
+
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        quickSearchInput = new TrackingEditText(this);
+        quickSearchInput.setSingleLine(true);
+        quickSearchInput.setHint("Suchen");
+        quickSearchInput.setText(searchSession.cachedTerm());
+        quickSearchInput.setSelectAllOnFocus(false);
+        quickSearchInput.setTextSize(14f);
+        quickSearchInput.setMinWidth(dp(120));
+        quickSearchInput.setBackground(roundedBackground(Color.WHITE, Color.rgb(205, 214, 226), 6));
+        quickSearchInput.setPadding(dp(7), 0, dp(7), 0);
+        quickSearchInput.setOnFocusChangeListener((view, hasFocus) -> { if (hasFocus) setActivePane(ActivePane.RTF_EDITOR); });
+        quickSearchInput.setOnEditorActionListener((v, actionId, event) -> { quickSearchNext(); return true; });
+        row.addView(quickSearchInput, new LinearLayout.LayoutParams(dp(170), dp(30)));
+
+        TextView next = smallSearchButton("Weiter", "↓", v -> quickSearchNext());
+        TextView all = smallSearchButton("Alle Treffer", "Alle", v -> quickSearchAllResults());
+        TextView hide = smallSearchButton("Suche schließen", "×", v -> hideQuickSearchBar());
+        row.addView(next);
+        row.addView(all);
+        row.addView(hide);
+
+        quickSearchWholeTree = searchCheckBox("Ganz", searchSession.cachedTerm().isEmpty() || searchSession.cachedAllNodes(), "Ganzer Baum statt aktueller Teilbaum");
+        quickSearchWholeWords = searchCheckBox("Wort", searchSession.cachedWholeWords(), "Ganze Wörter");
+        quickSearchCaseSensitive = searchCheckBox("Aa", searchSession.cachedCaseSensitive(), "Groß-/Kleinschreibung beachten");
+        quickSearchIncludeTitles = searchCheckBox("Titel", searchSession.cachedTerm().isEmpty() || searchSession.cachedIncludeTitles(), "Titel mitsuchen");
+        row.addView(quickSearchWholeTree);
+        row.addView(quickSearchIncludeTitles);
+        row.addView(quickSearchWholeWords);
+        row.addView(quickSearchCaseSensitive);
+
+        quickSearchStatus = new TextView(this);
+        quickSearchStatus.setSingleLine(true);
+        quickSearchStatus.setTextSize(12f);
+        quickSearchStatus.setTextColor(Color.rgb(75, 84, 98));
+        quickSearchStatus.setPadding(dp(6), 0, dp(6), 0);
+        quickSearchStatus.setText("aktueller Teilbaum / ganzer Baum wählbar");
+        row.addView(quickSearchStatus, new LinearLayout.LayoutParams(dp(210), dp(30)));
+
+        scroll.addView(row, new HorizontalScrollView.LayoutParams(-2, -2));
+        outer.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
+        return outer;
+    }
+
+    private TextView smallSearchButton(String description, String glyph, View.OnClickListener listener) {
+        TextView b = new TextView(this);
+        b.setText(glyph);
+        b.setGravity(Gravity.CENTER);
+        b.setSingleLine(true);
+        b.setTextSize(glyph != null && glyph.length() > 1 ? 9f : 16f);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTextColor(Color.rgb(30, 42, 58));
+        b.setBackground(toolbarButtonBackground());
+        b.setContentDescription(description);
+        if (Build.VERSION.SDK_INT >= 26) b.setTooltipText(description);
+        b.setOnClickListener(listener);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(34), dp(30));
+        p.setMargins(dp(2), 0, dp(2), 0);
+        b.setLayoutParams(p);
+        return b;
+    }
+
+    private CheckBox searchCheckBox(String text, boolean checked, String description) {
+        CheckBox c = new CheckBox(this);
+        c.setText(text);
+        c.setTextSize(11f);
+        c.setSingleLine(true);
+        c.setChecked(checked);
+        c.setContentDescription(description);
+        if (Build.VERSION.SDK_INT >= 26) c.setTooltipText(description);
+        c.setPadding(0, 0, 0, 0);
+        c.setMinHeight(0);
+        c.setMinimumHeight(0);
+        return c;
     }
 
     private float toolbarGlyphTextSize(String glyph) {
@@ -1168,12 +1402,14 @@ public final class MainActivity extends Activity {
         return label == null || label.isEmpty() ? "•" : label.substring(0, 1);
     }
 
-    private Drawable toolbarButtonBackground() {
+    private Drawable toolbarButtonBackground() { return toolbarButtonBackground(false); }
+
+    private Drawable toolbarButtonBackground(boolean active) {
         GradientDrawable base = new GradientDrawable();
         base.setShape(GradientDrawable.RECTANGLE);
-        base.setColor(Color.rgb(255, 255, 255));
+        base.setColor(active ? Color.rgb(221, 236, 255) : Color.rgb(255, 255, 255));
         base.setCornerRadius(dp(7));
-        base.setStroke(dp(1), Color.rgb(198, 208, 222));
+        base.setStroke(dp(1), active ? Color.rgb(74, 133, 216) : Color.rgb(198, 208, 222));
 
         GradientDrawable mask = new GradientDrawable();
         mask.setShape(GradientDrawable.RECTANGLE);
@@ -1284,6 +1520,7 @@ public final class MainActivity extends Activity {
         if (pane == null) return;
         lastActivePane = pane;
         lastFormatTarget = pane == ActivePane.RTF_EDITOR ? FormatTarget.RTF_EDITOR : FormatTarget.TREE_NODE;
+        scheduleFormatToolbarStateUpdate();
     }
 
     private ActivePane activePaneForMiddleToolbar() {
@@ -1297,6 +1534,101 @@ public final class MainActivity extends Activity {
     private boolean shouldFormatTreeTarget() {
         ActivePane active = activePaneForMiddleToolbar();
         return active == ActivePane.TREE_NODE || active == ActivePane.TITLE_TEXT;
+    }
+
+
+    private void scheduleFormatToolbarStateUpdate() {
+        if (formatToolbarUpdateScheduled) return;
+        formatToolbarUpdateScheduled = true;
+        if (mainHandler == null) {
+            formatToolbarUpdateScheduled = false;
+            updateFormatToolbarState();
+        } else {
+            mainHandler.post(() -> {
+                formatToolbarUpdateScheduled = false;
+                updateFormatToolbarState();
+            });
+        }
+    }
+
+    private void updateFormatToolbarState() {
+        if (textToolbarActionButtons.isEmpty()) return;
+        boolean treeTarget = shouldFormatTreeTarget();
+        for (Map.Entry<String, TextView> entry : textToolbarActionButtons.entrySet()) {
+            String action = entry.getKey();
+            TextView button = entry.getValue();
+            if (button == null) continue;
+            boolean active = treeTarget ? isTreeFormatActionActive(action) : isRtfFormatActionActive(action);
+            button.setBackground(toolbarButtonBackground(active));
+            button.setTextColor(active ? Color.rgb(20, 72, 145) : Color.rgb(30, 42, 58));
+        }
+    }
+
+    private boolean isTreeFormatActionActive(String action) {
+        if (currentNode == null || action == null) return false;
+        String styles = currentNode.extraAttrs.get(NODE_TITLE_STYLE_ATTR);
+        String normalized = styles == null ? "" : styles.toLowerCase(Locale.ROOT);
+        if ("format_bold".equals(action)) return containsStyle(normalized, "bold");
+        if ("format_italic".equals(action)) return containsStyle(normalized, "italic");
+        if ("format_underline".equals(action)) return containsStyle(normalized, "underline");
+        if ("format_strike".equals(action)) return containsStyle(normalized, "strike");
+        if ("text_color".equals(action)) return currentNode.fgArgb != 0;
+        if ("highlight_color".equals(action)) return currentNode.bgArgb != 0;
+        if ("font_family".equals(action)) return currentNode.extraAttrs.containsKey(NODE_TITLE_FONT_ATTR);
+        if ("font_size".equals(action)) return currentNode.extraAttrs.containsKey(NODE_TITLE_SIZE_ATTR);
+        if ("format_regular".equals(action)) {
+            return normalized.trim().isEmpty() && currentNode.fgArgb == 0 && currentNode.bgArgb == 0
+                    && !currentNode.extraAttrs.containsKey(NODE_TITLE_FONT_ATTR)
+                    && !currentNode.extraAttrs.containsKey(NODE_TITLE_SIZE_ATTR);
+        }
+        return false;
+    }
+
+    private boolean containsStyle(String csv, String style) {
+        if (csv == null || style == null) return false;
+        for (String part : csv.split(",")) if (style.equals(part.trim())) return true;
+        return false;
+    }
+
+    private boolean isRtfFormatActionActive(String action) {
+        if (editor == null || action == null) return false;
+        Spannable text = editor.getText();
+        if (text == null || text.length() == 0) return "format_regular".equals(action) || "align_left".equals(action);
+        int pos = Math.max(0, Math.min(editor.getSelectionStart(), text.length() - 1));
+        RtfTextStyle style = styleAt(text, pos);
+        if ("format_bold".equals(action)) return style.bold;
+        if ("format_italic".equals(action)) return style.italic;
+        if ("format_underline".equals(action)) return style.underline;
+        if ("format_strike".equals(action)) return style.strike;
+        if ("text_color".equals(action)) return style.fgColor != null;
+        if ("highlight_color".equals(action)) return style.bgColor != null;
+        if ("font_family".equals(action)) return style.fontFamily != null;
+        if ("font_size".equals(action)) return style.fontSizeHalfPoints != null;
+        if ("format_regular".equals(action)) {
+            return !style.bold && !style.italic && !style.underline && !style.strike
+                    && style.fgColor == null && style.bgColor == null && style.fontFamily == null
+                    && style.fontSizeHalfPoints == null && style.vertical == null;
+        }
+        String alignment = currentParagraphAlignmentAction(text, pos);
+        if ("align_left".equals(action)) return "align_left".equals(alignment);
+        if ("align_center".equals(action)) return "align_center".equals(alignment);
+        if ("align_right".equals(action)) return "align_right".equals(alignment);
+        if ("align_justify".equals(action)) return "align_justify".equals(alignment);
+        return false;
+    }
+
+    private String currentParagraphAlignmentAction(Spannable text, int pos) {
+        if (text == null || text.length() == 0) return "align_left";
+        int start = Math.max(0, Math.min(pos, text.length() - 1));
+        int end = Math.min(text.length(), start + 1);
+        AlignmentSpan[] aligns = text.getSpans(start, end, AlignmentSpan.class);
+        if (aligns.length == 0) return "align_left";
+        AlignmentSpan span = aligns[aligns.length - 1];
+        if (span instanceof RtfParagraphAlignmentSpan && "justify".equals(((RtfParagraphAlignmentSpan) span).legacyAlign)) return "align_justify";
+        Layout.Alignment alignment = span.getAlignment();
+        if (alignment == Layout.Alignment.ALIGN_CENTER) return "align_center";
+        if (alignment == Layout.Alignment.ALIGN_OPPOSITE) return "align_right";
+        return "align_left";
     }
 
     private void markDocumentChanged() {
@@ -2298,6 +2630,7 @@ public final class MainActivity extends Activity {
         internalEditorClipboardPlain = selected.toString();
         setPlainSystemClipboard(internalEditorClipboardPlain);
         if (cut) {
+            pushEditorUndoSnapshot("cut");
             editor.getText().delete(range[0], range[1]);
             markEditorRichChanged("RTF-Text ausgeschnitten");
         } else {
@@ -2320,6 +2653,7 @@ public final class MainActivity extends Activity {
         }
         Editable editable = editor.getText();
         int[] range = editorSelectionRange(false);
+        pushEditorUndoSnapshot("paste");
         editable.replace(range[0], range[1], payload);
         int cursor = Math.max(0, Math.min(range[0] + payload.length(), editable.length()));
         editor.setSelection(cursor);
@@ -2331,8 +2665,10 @@ public final class MainActivity extends Activity {
         Editable editable = editor.getText();
         int[] range = editorSelectionRange(false);
         if (range[1] > range[0]) {
+            pushEditorUndoSnapshot("delete");
             editable.delete(range[0], range[1]);
         } else if (range[0] < editable.length()) {
+            pushEditorUndoSnapshot("delete");
             editable.delete(range[0], range[0] + 1);
         } else {
             toast("Nichts zu löschen");
@@ -2355,6 +2691,7 @@ public final class MainActivity extends Activity {
         for (LeadingMarginSpan.Standard span : spans) {
             current = Math.max(current, Math.max(span.getLeadingMargin(true), span.getLeadingMargin(false)));
         }
+        pushEditorUndoSnapshot("indent");
         removeOverlappingSpans(text, para[0], para[1], LeadingMarginSpan.Standard.class);
         int step = dp(24);
         int next = Math.max(0, current + (direction < 0 ? -step : step));
@@ -2492,16 +2829,18 @@ public final class MainActivity extends Activity {
         String value = LegacyEditorActions.androidDateInsertText(new Date());
         int start = Math.max(0, editor.getSelectionStart());
         int end = Math.max(start, editor.getSelectionEnd());
+        pushEditorUndoSnapshot("date");
         editor.getText().replace(start, end, value);
-        status("Legacy-Datum eingefügt");
+        markEditorRichChanged("Legacy-Datum eingefügt");
     }
 
     private void insertLegacyBullet() {
         if (editor == null) return;
         int start = Math.max(0, editor.getSelectionStart());
         int end = Math.max(start, editor.getSelectionEnd());
+        pushEditorUndoSnapshot("bullet");
         editor.getText().replace(start, end, LegacyEditorActions.androidBulletInsertText());
-        status("Legacy-Aufzählungspunkt eingefügt");
+        markEditorRichChanged("Legacy-Aufzählungspunkt eingefügt");
     }
 
     private void insertDateForActiveTarget() {
@@ -2547,17 +2886,17 @@ public final class MainActivity extends Activity {
         if ("font_family".equals(action)) { showTreeFontFamilyDialog(); return; }
         if ("font_size".equals(action)) { showTreeFontSizeDialog(); return; }
         if ("format_regular".equals(action)) { clearTreeTextFormatting(); return; }
-        if ("format_bold".equals(action)) { addTreeTitleStyle("bold", "Baumtext fett"); return; }
-        if ("format_italic".equals(action)) { addTreeTitleStyle("italic", "Baumtext kursiv"); return; }
-        if ("format_underline".equals(action)) { addTreeTitleStyle("underline", "Baumtext unterstrichen"); return; }
-        if ("format_strike".equals(action)) { addTreeTitleStyle("strike", "Baumtext durchgestrichen"); return; }
+        if ("format_bold".equals(action)) { toggleTreeTitleStyle("bold", "Baumtext fett", "Baumtext nicht fett"); return; }
+        if ("format_italic".equals(action)) { toggleTreeTitleStyle("italic", "Baumtext kursiv", "Baumtext nicht kursiv"); return; }
+        if ("format_underline".equals(action)) { toggleTreeTitleStyle("underline", "Baumtext unterstrichen", "Baumtext nicht unterstrichen"); return; }
+        if ("format_strike".equals(action)) { toggleTreeTitleStyle("strike", "Baumtext durchgestrichen", "Baumtext nicht durchgestrichen"); return; }
         if ("font_bigger".equals(action)) { applyTreeFontSize(LegacyRichTextToolbar.nextFontSize(currentTreeTitleSize(), +1)); return; }
         if ("font_smaller".equals(action)) { applyTreeFontSize(LegacyRichTextToolbar.nextFontSize(currentTreeTitleSize(), -1)); return; }
         if (action.startsWith("align_")) { toast("Ausrichtung betrifft nur die RTF-Box."); return; }
         status(spec.tooltip == null || spec.tooltip.isEmpty() ? "Baumformat-Aktion" : spec.tooltip);
     }
 
-    private void addTreeTitleStyle(String style, String message) {
+    private void toggleTreeTitleStyle(String style, String enabledMessage, String disabledMessage) {
         if (currentNode == null || style == null || style.isEmpty()) return;
         String raw = currentNode.extraAttrs.get(NODE_TITLE_STYLE_ATTR);
         LinkedHashMap<String, Boolean> values = new LinkedHashMap<>();
@@ -2567,14 +2906,17 @@ public final class MainActivity extends Activity {
                 if (!clean.isEmpty()) values.put(clean, Boolean.TRUE);
             }
         }
-        values.put(style.toLowerCase(Locale.ROOT), Boolean.TRUE);
+        String cleanStyle = style.toLowerCase(Locale.ROOT);
+        boolean enable = !values.containsKey(cleanStyle);
+        if (enable) values.put(cleanStyle, Boolean.TRUE); else values.remove(cleanStyle);
         StringBuilder out = new StringBuilder();
         for (String key : values.keySet()) {
             if (out.length() > 0) out.append(',');
             out.append(key);
         }
-        currentNode.extraAttrs.put(NODE_TITLE_STYLE_ATTR, out.toString());
-        markTreeTextFormatChanged(message);
+        if (out.length() == 0) currentNode.extraAttrs.remove(NODE_TITLE_STYLE_ATTR);
+        else currentNode.extraAttrs.put(NODE_TITLE_STYLE_ATTR, out.toString());
+        markTreeTextFormatChanged(enable ? enabledMessage : disabledMessage);
     }
 
     private void clearTreeTextFormatting() {
@@ -2583,6 +2925,7 @@ public final class MainActivity extends Activity {
         currentNode.extraAttrs.remove(NODE_TITLE_FONT_ATTR);
         currentNode.extraAttrs.remove(NODE_TITLE_SIZE_ATTR);
         currentNode.fgArgb = 0;
+        currentNode.bgArgb = 0;
         markTreeTextFormatChanged("Baumtext normal");
     }
 
@@ -2724,6 +3067,7 @@ public final class MainActivity extends Activity {
             runs.add(new SizeRun(pos, next, LegacyTouchZoomModel.fontSizeByStep(current, direction)));
             pos = next;
         }
+        pushEditorUndoSnapshot("zoom");
         removeOverlappingSpans(text, start, end, AbsoluteSizeSpan.class);
         for (SizeRun run : runs) {
             if (run.end > run.start) text.setSpan(new AbsoluteSizeSpan(run.size, true), run.start, run.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -2868,21 +3212,42 @@ public final class MainActivity extends Activity {
             return;
         }
         String normalized = action == null ? "" : action;
+        pushEditorUndoSnapshot("format");
         if ("format_regular".equals(normalized)) {
             removeCharacterFormatting(text, range[0], range[1]);
             markEditorRichChanged("Zeichenformat zurückgesetzt");
         } else if ("format_bold".equals(normalized)) {
-            text.setSpan(new StyleSpan(Typeface.BOLD), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            markEditorRichChanged("Fett angewendet");
+            if (isRtfFormatActionActive("format_bold")) {
+                removeStyleFromRange(text, range[0], range[1], Typeface.BOLD);
+                markEditorRichChanged("Fett entfernt");
+            } else {
+                text.setSpan(new StyleSpan(Typeface.BOLD), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                markEditorRichChanged("Fett angewendet");
+            }
         } else if ("format_italic".equals(normalized)) {
-            text.setSpan(new StyleSpan(Typeface.ITALIC), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            markEditorRichChanged("Kursiv angewendet");
+            if (isRtfFormatActionActive("format_italic")) {
+                removeStyleFromRange(text, range[0], range[1], Typeface.ITALIC);
+                markEditorRichChanged("Kursiv entfernt");
+            } else {
+                text.setSpan(new StyleSpan(Typeface.ITALIC), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                markEditorRichChanged("Kursiv angewendet");
+            }
         } else if ("format_underline".equals(normalized)) {
-            text.setSpan(new UnderlineSpan(), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            markEditorRichChanged("Unterstrichen angewendet");
+            if (isRtfFormatActionActive("format_underline")) {
+                removeOverlappingSpans(text, range[0], range[1], UnderlineSpan.class);
+                markEditorRichChanged("Unterstrichen entfernt");
+            } else {
+                text.setSpan(new UnderlineSpan(), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                markEditorRichChanged("Unterstrichen angewendet");
+            }
         } else if ("format_strike".equals(normalized)) {
-            text.setSpan(new StrikethroughSpan(), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            markEditorRichChanged("Durchgestrichen angewendet");
+            if (isRtfFormatActionActive("format_strike")) {
+                removeOverlappingSpans(text, range[0], range[1], StrikethroughSpan.class);
+                markEditorRichChanged("Durchgestrichen entfernt");
+            } else {
+                text.setSpan(new StrikethroughSpan(), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                markEditorRichChanged("Durchgestrichen angewendet");
+            }
         } else if ("font_bigger".equals(normalized)) {
             int next = LegacyRichTextToolbar.nextFontSize(currentSelectionPointSize(), +1);
             applyFontSizeToSelection(next);
@@ -2899,10 +3264,16 @@ public final class MainActivity extends Activity {
     private void showRtfColorPalette(LegacyColorDialogModel.Role role) {
         if (currentNode == null || editor == null) return;
         String title = role == LegacyColorDialogModel.Role.RTF_HIGHLIGHT ? "RTF-Hintergrundfarbe" : "RTF-Textfarbe";
-        String[] labels = LegacyColorDialogModel.paletteLabels();
+        String[] palette = LegacyColorDialogModel.paletteLabels();
+        String[] labels = new String[palette.length + 1];
+        for (int i = 0; i < palette.length; i++) labels[i] = palette[i];
+        labels[palette.length] = role == LegacyColorDialogModel.Role.RTF_HIGHLIGHT ? "RTF-Hintergrund löschen" : "RTF-Textfarbe löschen";
         new AlertDialog.Builder(this)
                 .setTitle(title)
-                .setItems(labels, (d, which) -> applyRtfColorToSelection(LegacyColorDialogModel.choosePalette(role, which)))
+                .setItems(labels, (d, which) -> {
+                    if (which >= palette.length) clearRtfColorFromSelection(role == LegacyColorDialogModel.Role.RTF_HIGHLIGHT);
+                    else applyRtfColorToSelection(LegacyColorDialogModel.choosePalette(role, which));
+                })
                 .setNegativeButton("Abbrechen", null)
                 .show();
     }
@@ -2917,6 +3288,7 @@ public final class MainActivity extends Activity {
         Spannable text = editor.getText();
         try {
             int color = Color.parseColor(decision.css);
+            pushEditorUndoSnapshot("color");
             if (decision.role == LegacyColorDialogModel.Role.RTF_HIGHLIGHT) {
                 removeOverlappingSpans(text, range[0], range[1], BackgroundColorSpan.class);
                 text.setSpan(new BackgroundColorSpan(color), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -2939,6 +3311,7 @@ public final class MainActivity extends Activity {
             return;
         }
         Spannable text = editor.getText();
+        pushEditorUndoSnapshot("clear-color");
         if (background) {
             removeOverlappingSpans(text, range[0], range[1], BackgroundColorSpan.class);
             markEditorRichChanged("RTF-Hintergrundfarbe entfernt");
@@ -3021,6 +3394,7 @@ public final class MainActivity extends Activity {
         }
         Spannable text = editor.getText();
         String clean = LegacyRichTextToolbar.normalizeFontFamily(family);
+        pushEditorUndoSnapshot("font-family");
         removeOverlappingSpans(text, range[0], range[1], RtfTypefaceSpan.class);
         text.setSpan(new RtfTypefaceSpan(clean), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         markEditorRichChanged("Schriftart angewendet: " + clean);
@@ -3035,6 +3409,7 @@ public final class MainActivity extends Activity {
             return;
         }
         Spannable text = editor.getText();
+        pushEditorUndoSnapshot("font-size");
         removeOverlappingSpans(text, range[0], range[1], AbsoluteSizeSpan.class);
         text.setSpan(new AbsoluteSizeSpan(clamped, true), range[0], range[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         markEditorRichChanged("Schriftgröße angewendet: " + clamped + " pt");
@@ -3046,13 +3421,15 @@ public final class MainActivity extends Activity {
         if (text.length() == 0) return;
         int[] selected = editorSelectionRange(true);
         int[] para = paragraphRange(text.toString(), selected[0], selected[1]);
-        removeOverlappingSpans(text, para[0], para[1], AlignmentSpan.Standard.class);
+        pushEditorUndoSnapshot("align");
+        removeOverlappingSpans(text, para[0], para[1], AlignmentSpan.class);
         Layout.Alignment alignment = Layout.Alignment.ALIGN_NORMAL;
+        String legacyAlign = "left";
         String message = "Linksbündig angewendet";
-        if ("align_center".equals(action)) { alignment = Layout.Alignment.ALIGN_CENTER; message = "Zentriert angewendet"; }
-        else if ("align_right".equals(action)) { alignment = Layout.Alignment.ALIGN_OPPOSITE; message = "Rechtsbündig angewendet"; }
-        else if ("align_justify".equals(action)) { alignment = Layout.Alignment.ALIGN_NORMAL; message = "Blocksatz mobil als Linksbündig gespeichert"; }
-        if (para[1] > para[0]) text.setSpan(new AlignmentSpan.Standard(alignment), para[0], para[1], Spanned.SPAN_PARAGRAPH);
+        if ("align_center".equals(action)) { alignment = Layout.Alignment.ALIGN_CENTER; legacyAlign = "center"; message = "Zentriert angewendet"; }
+        else if ("align_right".equals(action)) { alignment = Layout.Alignment.ALIGN_OPPOSITE; legacyAlign = "right"; message = "Rechtsbündig angewendet"; }
+        else if ("align_justify".equals(action)) { alignment = Layout.Alignment.ALIGN_NORMAL; legacyAlign = "justify"; message = "Blocksatz gespeichert"; }
+        if (para[1] > para[0]) text.setSpan(new RtfParagraphAlignmentSpan(alignment, legacyAlign), para[0], para[1], Spanned.SPAN_PARAGRAPH);
         markEditorRichChanged(message);
     }
 
@@ -3084,8 +3461,32 @@ public final class MainActivity extends Activity {
         removeOverlappingSpans(text, start, end, SuperscriptSpan.class);
         removeOverlappingSpans(text, start, end, SubscriptSpan.class);
         int[] para = paragraphRange(text.toString(), start, end);
-        removeOverlappingSpans(text, para[0], para[1], AlignmentSpan.Standard.class);
+        removeOverlappingSpans(text, para[0], para[1], AlignmentSpan.class);
         removeOverlappingSpans(text, para[0], para[1], LeadingMarginSpan.Standard.class);
+    }
+
+    private void removeStyleFromRange(Spannable text, int start, int end, int styleToRemove) {
+        if (text == null || end <= start) return;
+        StyleSpan[] spans = text.getSpans(start, end, StyleSpan.class);
+        for (StyleSpan span : spans) {
+            int style = span.getStyle();
+            boolean hasTarget = styleToRemove == Typeface.BOLD
+                    ? (style == Typeface.BOLD || style == Typeface.BOLD_ITALIC)
+                    : (style == Typeface.ITALIC || style == Typeface.BOLD_ITALIC);
+            if (!hasTarget) continue;
+            int oldStart = text.getSpanStart(span);
+            int oldEnd = text.getSpanEnd(span);
+            if (oldEnd <= start || oldStart >= end) continue;
+            int flags = text.getSpanFlags(span);
+            text.removeSpan(span);
+            if (oldStart < start) text.setSpan(new StyleSpan(style), oldStart, start, flags);
+            if (oldEnd > end) text.setSpan(new StyleSpan(style), end, oldEnd, flags);
+            int replacement = 0;
+            if (style == Typeface.BOLD_ITALIC) replacement = styleToRemove == Typeface.BOLD ? Typeface.ITALIC : Typeface.BOLD;
+            int overlapStart = Math.max(oldStart, start);
+            int overlapEnd = Math.min(oldEnd, end);
+            if (replacement != 0 && overlapEnd > overlapStart) text.setSpan(new StyleSpan(replacement), overlapStart, overlapEnd, flags);
+        }
     }
 
     private void removeOverlappingSpans(Spannable text, int start, int end, Class<?> spanClass) {
@@ -3115,16 +3516,125 @@ public final class MainActivity extends Activity {
         if (span instanceof SuperscriptSpan) return new SuperscriptSpan();
         if (span instanceof SubscriptSpan) return new SubscriptSpan();
         if (span instanceof URLSpan) return new URLSpan(((URLSpan) span).getURL());
-        if (span instanceof AlignmentSpan.Standard) return new AlignmentSpan.Standard(((AlignmentSpan.Standard) span).getAlignment());
+        if (span instanceof RtfParagraphAlignmentSpan) return new RtfParagraphAlignmentSpan(((RtfParagraphAlignmentSpan) span).getAlignment(), ((RtfParagraphAlignmentSpan) span).legacyAlign);
+        if (span instanceof AlignmentSpan) return new AlignmentSpan.Standard(((AlignmentSpan) span).getAlignment());
         if (span instanceof LeadingMarginSpan.Standard) return new LeadingMarginSpan.Standard(((LeadingMarginSpan.Standard) span).getLeadingMargin(true), ((LeadingMarginSpan.Standard) span).getLeadingMargin(false));
         if (span instanceof RtfRawSpan) return new RtfRawSpan(((RtfRawSpan) span).rawRtf, ((RtfRawSpan) span).kind);
         return null;
     }
 
+    private void pushEditorUndoSnapshot(String reason) {
+        if (editor == null || loadingEditor || editorHistoryRestoring || editorHistorySnapshotLocked) return;
+        EditorHistoryEntry entry = captureEditorHistoryEntry();
+        if (entry == null) return;
+        if (!editorUndoStack.isEmpty() && sameEditorHistory(editorUndoStack.get(editorUndoStack.size() - 1), entry)) return;
+        editorUndoStack.add(entry);
+        trimEditorHistory(editorUndoStack);
+        editorRedoStack.clear();
+        scheduleFormatToolbarStateUpdate();
+    }
+
+    private void maybePushEditorTypingUndoSnapshot() {
+        long now = System.currentTimeMillis();
+        if (!editorUndoStack.isEmpty() && now - lastEditorTypingUndoAt < EDITOR_TYPING_UNDO_INTERVAL_MS) return;
+        pushEditorUndoSnapshot("typing");
+        lastEditorTypingUndoAt = now;
+    }
+
+    private EditorHistoryEntry captureEditorHistoryEntry() {
+        if (editor == null || editor.getText() == null) return null;
+        int len = editor.getText().length();
+        int start = Math.max(0, Math.min(editor.getSelectionStart(), len));
+        int end = Math.max(0, Math.min(editor.getSelectionEnd(), len));
+        if (end < start) { int tmp = start; start = end; end = tmp; }
+        return new EditorHistoryEntry(editor.getText(), start, end);
+    }
+
+    private boolean sameEditorHistory(EditorHistoryEntry a, EditorHistoryEntry b) {
+        if (a == null || b == null) return false;
+        return a.selectionStart == b.selectionStart && a.selectionEnd == b.selectionEnd
+                && a.signature.equals(b.signature);
+    }
+
+    private void trimEditorHistory(ArrayList<EditorHistoryEntry> stack) {
+        if (stack == null) return;
+        int start = LegacyRtfUndoModel.trimStartIndex(stack.size(), LegacyRtfUndoModel.DEFAULT_LIMIT);
+        if (start <= 0) return;
+        for (int i = 0; i < start; i++) stack.remove(0);
+    }
+
+    private void undoForActiveTarget() {
+        if (shouldFormatTreeTarget()) {
+            toast("Rückgängig ist in dieser Stufe für die RTF-Box umgesetzt. Für Baumänderungen bitte Speichern/Backup nutzen.");
+            return;
+        }
+        undoEditorChange();
+    }
+
+    private void redoForActiveTarget() {
+        if (shouldFormatTreeTarget()) {
+            toast("Wiederholen ist in dieser Stufe für die RTF-Box umgesetzt.");
+            return;
+        }
+        redoEditorChange();
+    }
+
+    private void undoEditorChange() {
+        if (editorUndoStack.isEmpty()) {
+            toast("Keine RTF-Änderung zum Rückgängigmachen.");
+            return;
+        }
+        EditorHistoryEntry current = captureEditorHistoryEntry();
+        if (current != null) {
+            editorRedoStack.add(current);
+            trimEditorHistory(editorRedoStack);
+        }
+        EditorHistoryEntry entry = editorUndoStack.remove(editorUndoStack.size() - 1);
+        restoreEditorHistory(entry, "RTF rückgängig");
+    }
+
+    private void redoEditorChange() {
+        if (editorRedoStack.isEmpty()) {
+            toast("Keine RTF-Änderung zum Wiederholen.");
+            return;
+        }
+        EditorHistoryEntry current = captureEditorHistoryEntry();
+        if (current != null) {
+            editorUndoStack.add(current);
+            trimEditorHistory(editorUndoStack);
+        }
+        EditorHistoryEntry entry = editorRedoStack.remove(editorRedoStack.size() - 1);
+        restoreEditorHistory(entry, "RTF wiederholt");
+    }
+
+    private void restoreEditorHistory(EditorHistoryEntry entry, String message) {
+        if (entry == null || editor == null) return;
+        boolean oldLoading = loadingEditor;
+        editorHistoryRestoring = true;
+        loadingEditor = true;
+        try {
+            editor.setText(new SpannableStringBuilder(entry.text));
+            int len = editor.getText().length();
+            int start = Math.max(0, Math.min(entry.selectionStart, len));
+            int end = Math.max(start, Math.min(entry.selectionEnd, len));
+            editor.setSelection(start, end);
+        } finally {
+            loadingEditor = oldLoading;
+            editorHistoryRestoring = false;
+        }
+        editorDirty = true;
+        markDocumentChanged();
+        updateTitle();
+        scheduleFormatToolbarStateUpdate();
+        toast(message);
+    }
+
     private void markEditorRichChanged(String message) {
         editorDirty = true;
+        if (!editorHistoryRestoring) editorRedoStack.clear();
         if (document != null) markDocumentChanged();
         updateTitle();
+        scheduleFormatToolbarStateUpdate();
         status(message == null || message.isEmpty() ? "RTF-Format angewendet" : message);
     }
 
@@ -3149,6 +3659,7 @@ public final class MainActivity extends Activity {
             }
             Editable editable = editor.getText();
             Spannable text = editable;
+            pushEditorUndoSnapshot("image");
             int start = Math.max(0, Math.min(editor.getSelectionStart(), text.length()));
             int end = Math.max(0, Math.min(editor.getSelectionEnd(), text.length()));
             if (end < start) { int tmp = start; start = end; end = tmp; }
@@ -3841,10 +4352,12 @@ public final class MainActivity extends Activity {
         if ("sub".equals(style.vertical)) spannable.setSpan(new SubscriptSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         if (style.align != null && !style.align.isEmpty()) {
             Layout.Alignment alignment = Layout.Alignment.ALIGN_NORMAL;
+            String legacyAlign = style.align;
             if ("center".equals(style.align)) alignment = Layout.Alignment.ALIGN_CENTER;
             else if ("right".equals(style.align)) alignment = Layout.Alignment.ALIGN_OPPOSITE;
+            else if ("justify".equals(style.align)) alignment = Layout.Alignment.ALIGN_NORMAL;
             int[] para = paragraphRange(spannable.toString(), start, end);
-            if (para[1] > para[0]) spannable.setSpan(new AlignmentSpan.Standard(alignment), para[0], para[1], Spanned.SPAN_PARAGRAPH);
+            if (para[1] > para[0]) spannable.setSpan(new RtfParagraphAlignmentSpan(alignment, legacyAlign), para[0], para[1], Spanned.SPAN_PARAGRAPH);
         }
         if (style.leftIndentTwips > 0 || style.firstIndentTwips != 0) {
             int first = twipsToPx(style.leftIndentTwips + style.firstIndentTwips);
@@ -4018,12 +4531,16 @@ public final class MainActivity extends Activity {
         if (sizes.length > 0) style.fontSizeHalfPoints = Math.max(1, sizes[sizes.length - 1].getSize()) * 2;
         if (spanned.getSpans(pos, end, SuperscriptSpan.class).length > 0) style.vertical = "super";
         if (spanned.getSpans(pos, end, SubscriptSpan.class).length > 0) style.vertical = "sub";
-        AlignmentSpan.Standard[] aligns = spanned.getSpans(pos, end, AlignmentSpan.Standard.class);
+        AlignmentSpan[] aligns = spanned.getSpans(pos, end, AlignmentSpan.class);
         if (aligns.length > 0) {
-            Layout.Alignment a = aligns[aligns.length - 1].getAlignment();
-            if (a == Layout.Alignment.ALIGN_CENTER) style.align = "center";
-            else if (a == Layout.Alignment.ALIGN_OPPOSITE) style.align = "right";
-            else style.align = null;
+            AlignmentSpan last = aligns[aligns.length - 1];
+            if (last instanceof RtfParagraphAlignmentSpan && "justify".equals(((RtfParagraphAlignmentSpan) last).legacyAlign)) style.align = "justify";
+            else {
+                Layout.Alignment a = last.getAlignment();
+                if (a == Layout.Alignment.ALIGN_CENTER) style.align = "center";
+                else if (a == Layout.Alignment.ALIGN_OPPOSITE) style.align = "right";
+                else style.align = null;
+            }
         }
         LeadingMarginSpan.Standard[] margins = spanned.getSpans(pos, end, LeadingMarginSpan.Standard.class);
         if (margins.length > 0) {
@@ -4128,6 +4645,9 @@ public final class MainActivity extends Activity {
         loadingEditor = false;
         editorDirty = false;
         titleDirty = false;
+        editorUndoStack.clear();
+        editorRedoStack.clear();
+        lastEditorTypingUndoAt = 0L;
         treeAdapter.setSelected(node);
         int pos = flatIndexOf(node);
         if (pos >= 0) {
@@ -4138,6 +4658,7 @@ public final class MainActivity extends Activity {
             setFormatTarget(FormatTarget.RTF_EDITOR);
             editor.requestFocus();
         }
+        scheduleFormatToolbarStateUpdate();
     }
 
     private void saveCurrentEditorToNode() {
@@ -4306,6 +4827,118 @@ public final class MainActivity extends Activity {
     }
 
     private void showSearchDialog() {
+        showQuickSearchBar(true);
+    }
+
+    private void showQuickSearchBar(boolean focus) {
+        if (quickSearchBar == null) return;
+        quickSearchBar.setVisibility(View.VISIBLE);
+        if (quickSearchInput != null) {
+            if (quickSearchInput.getText().length() == 0 && !searchSession.cachedTerm().isEmpty()) quickSearchInput.setText(searchSession.cachedTerm());
+            if (focus) {
+                quickSearchInput.requestFocus();
+                quickSearchInput.setSelection(quickSearchInput.getText().length());
+                InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                if (imm != null) imm.showSoftInput(quickSearchInput, InputMethodManager.SHOW_IMPLICIT);
+            }
+        }
+        updateQuickSearchStatus("Suchleiste bereit");
+    }
+
+    private void hideQuickSearchBar() {
+        if (quickSearchBar != null) quickSearchBar.setVisibility(View.GONE);
+        quickSearchResults.clear();
+        quickSearchIndex = -1;
+    }
+
+    private LegacyQuickSearchBar.Options currentQuickSearchOptions() {
+        String term = quickSearchInput == null ? searchSession.cachedTerm() : quickSearchInput.getText().toString();
+        return LegacyQuickSearchBar.normalize(
+                term,
+                quickSearchWholeTree != null && quickSearchWholeTree.isChecked(),
+                quickSearchWholeWords != null && quickSearchWholeWords.isChecked(),
+                quickSearchCaseSensitive != null && quickSearchCaseSensitive.isChecked(),
+                quickSearchIncludeTitles == null || quickSearchIncludeTitles.isChecked());
+    }
+
+    private void quickSearchNext() {
+        LegacyQuickSearchBar.Options options = currentQuickSearchOptions();
+        if (!options.accepted) { updateQuickSearchStatus(options.message); toast(options.message); return; }
+        saveCurrentEditorToNode();
+        quickSearchScope = options.scope;
+        LegacySearchSession.SearchStep step = searchSession.begin(document.ensureRoot(), currentNode, options.term,
+                options.scope == LegacyQuickSearchBar.Scope.WHOLE_TREE, options.wholeWords, options.caseSensitive, options.includeTitles,
+                settings == null ? "Deutsch" : settings.language);
+        quickSearchResults.clear();
+        quickSearchResults.addAll(step.results);
+        quickSearchIndex = step.selectedIndexOneBased - 1;
+        if (step.selected == null) {
+            updateQuickSearchStatus("Keine Treffer im " + LegacyQuickSearchBar.scopeLabel(options.scope));
+            toast("Keine Treffer");
+            return;
+        }
+        navigateToSearchResult(step.selected, quickSearchIndex, quickSearchResults.size(), options.scope);
+    }
+
+    private void quickSearchAllResults() {
+        LegacyQuickSearchBar.Options options = currentQuickSearchOptions();
+        if (!options.accepted) { updateQuickSearchStatus(options.message); toast(options.message); return; }
+        saveCurrentEditorToNode();
+        quickSearchScope = options.scope;
+        LegacySearchSession.SearchStep step = searchSession.begin(document.ensureRoot(), currentNode, options.term,
+                options.scope == LegacyQuickSearchBar.Scope.WHOLE_TREE, options.wholeWords, options.caseSensitive, options.includeTitles,
+                settings == null ? "Deutsch" : settings.language);
+        quickSearchResults.clear();
+        quickSearchResults.addAll(step.results);
+        quickSearchIndex = step.selectedIndexOneBased - 1;
+        if (quickSearchResults.isEmpty()) {
+            updateQuickSearchStatus("Keine Treffer im " + LegacyQuickSearchBar.scopeLabel(options.scope));
+            toast("Keine Treffer");
+            return;
+        }
+        int count = Math.min(quickSearchResults.size(), MAX_QUICK_SEARCH_RESULTS);
+        String[] labels = new String[count];
+        for (int i = 0; i < count; i++) labels[i] = quickSearchResults.get(i).label();
+        String title = quickSearchResults.size() > count ? "Treffer: " + quickSearchResults.size() + " (erste " + count + ")" : "Treffer: " + quickSearchResults.size();
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(labels, (d, which) -> {
+                    quickSearchIndex = which;
+                    navigateToSearchResult(quickSearchResults.get(which), which, quickSearchResults.size(), options.scope);
+                })
+                .setPositiveButton("OK", null)
+                .show();
+        updateQuickSearchStatus(LegacyQuickSearchBar.status(Math.max(1, quickSearchIndex + 1), quickSearchResults.size(), options.scope));
+    }
+
+    private void navigateToSearchResult(SearchResult r, int indexZeroBased, int total, LegacyQuickSearchBar.Scope scope) {
+        if (r == null || r.node == null) return;
+        ensureAncestorsExpanded(r.node);
+        rebuildTree();
+        selectNode(r.node, true);
+        if (r.titleMatch) {
+            if (titleEdit != null) {
+                titleEdit.requestFocus();
+                int start = Math.max(0, Math.min(r.start, titleEdit.getText().length()));
+                int end = Math.max(start, Math.min(start + r.length, titleEdit.getText().length()));
+                titleEdit.setSelection(start, end);
+                setActivePane(ActivePane.TITLE_TEXT);
+            }
+        } else if (editor != null) {
+            editor.requestFocus();
+            int start = Math.max(0, Math.min(r.start, editor.getText().length()));
+            int end = Math.max(start, Math.min(start + r.length, editor.getText().length()));
+            editor.setSelection(start, end);
+            setActivePane(ActivePane.RTF_EDITOR);
+        }
+        updateQuickSearchStatus(LegacyQuickSearchBar.status(indexZeroBased + 1, total, scope));
+    }
+
+    private void updateQuickSearchStatus(String text) {
+        if (quickSearchStatus != null) quickSearchStatus.setText(text == null ? "" : text);
+    }
+
+    private void showSearchDialogLegacy() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(12), 0, dp(12), 0);
@@ -4731,7 +5364,7 @@ public final class MainActivity extends Activity {
                 "v83 ergänzt: Dialog-Fokusmodell, ToolStrip-Toggles, Hauptfenster-Chrome, Autosave-Tick, CText-Semantik und Termux-APK-Buildplan.\n\n" +
                 "v95 ergänzt: font_set-Entscheidungsmodell, Move-/Resize-Mausmodell und ALX-Stream-Pipeline für lokale Datei, SAF und FTP.\n\n" +
                 "v103 korrigiert: der erste Leer/Neu-Start leert den Android-Baum wirklich, baut den Adapter neu auf und setzt die RTF-Box ohne alte Knotenreste zurück; Speichern-vorher läuft nach SAF-Speichern automatisch weiter.\n\n" +
-                "v105 stabilisiert den Zwei-Finger-Zoom der drei oberen Symbolleisten: die gesamte Toolbar-Fläche ist ein gemeinsames Zoomziel, Kind-Buttons bekommen keine eigenen konkurrierenden Touch-Listener mehr, Layoutänderungen werden gebündelt und Config-Speichern wird verzögert.\n\n" +
+                "v106 stabilisiert den Zwei-Finger-Zoom der drei oberen Symbolleisten: die gesamte Toolbar-Fläche ist ein gemeinsames Zoomziel, Kind-Buttons bekommen keine eigenen konkurrierenden Touch-Listener mehr, Layoutänderungen werden gebündelt und Config-Speichern wird verzögert.\n\n" +
                 "v104 ergänzt: Zwei-Finger-Zoom für RTF-Auswahl/ganzen RTF-Text, selektierten Baumtext, obere quadratische Symbolbuttons und die beiden hellgelben Überschriftfelder; große Bilder werden beim Einfügen und Anzeigen speicherschonend verkleinert/dekodiert.\n\n" +
                 "Bewusst mobil angepasst: Android nutzt keinen Windows-Tray und keine frei schwebenden Desktop-Haftnotiz-Fenster. Diese Metadaten bleiben im ALX erhalten und können mobil editiert werden. RTF wird als lesbarer Text angezeigt; vorhandenes RTF bleibt erhalten, solange die Notiz nicht bearbeitet wird.\n\n" +
                 "Lizenz: GPLv3 wie die Ausgangsarchive.";
@@ -4802,6 +5435,8 @@ public final class MainActivity extends Activity {
             case KeyEvent.KEYCODE_C: return "C";
             case KeyEvent.KEYCODE_V: return "V";
             case KeyEvent.KEYCODE_X: return "X";
+            case KeyEvent.KEYCODE_Z: return "Z";
+            case KeyEvent.KEYCODE_Y: return "Y";
             case KeyEvent.KEYCODE_U: return "U";
             case KeyEvent.KEYCODE_F: return "F";
             case KeyEvent.KEYCODE_PLUS: return "+";
@@ -4825,6 +5460,8 @@ public final class MainActivity extends Activity {
             case "new_document": confirmDiscardThen(this::newDocument); return true;
             case "quit": confirmDiscardThen(this::finish); return true;
             case "search": showSearchDialog(); return true;
+            case "undo": undoEditorChange(); return true;
+            case "redo": redoEditorChange(); return true;
             case "rename":
                 if (titleEdit != null) {
                     titleEdit.requestFocus();

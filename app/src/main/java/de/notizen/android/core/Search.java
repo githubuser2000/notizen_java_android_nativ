@@ -10,10 +10,25 @@ public final class Search {
     public static List<SearchResult> searchNodes(NoteNode root, String term, boolean wholeWords, boolean caseSensitive, boolean includeTitles) {
         ArrayList<SearchResult> results = new ArrayList<>();
         if (root == null || term == null || term.isEmpty()) return results;
-        for (NoteNode node : root.walk()) {
+        return searchNodeList(root.walk(), term, wholeWords, caseSensitive, includeTitles);
+    }
+
+    /** Search only the current node and its descendants.  This is the Android translation of PyQt's quick search scope. */
+    public static List<SearchResult> searchSubtree(NoteNode start, String term, boolean wholeWords, boolean caseSensitive, boolean includeTitles) {
+        ArrayList<SearchResult> results = new ArrayList<>();
+        if (start == null || term == null || term.isEmpty()) return results;
+        return searchNodeList(start.walk(), term, wholeWords, caseSensitive, includeTitles);
+    }
+
+    public static List<SearchResult> searchNodeList(List<NoteNode> nodes, String term, boolean wholeWords, boolean caseSensitive, boolean includeTitles) {
+        ArrayList<SearchResult> results = new ArrayList<>();
+        if (nodes == null || term == null || term.isEmpty()) return results;
+        for (NoteNode node : nodes) {
+            if (node == null) continue;
             if (includeTitles) {
-                for (int[] span : findInText(node.title == null ? "" : node.title, term, wholeWords, caseSensitive)) {
-                    results.add(new SearchResult(node, span[0], span[1] - span[0], true, snippet(node.title, span[0], span[1] - span[0])));
+                String title = node.title == null ? "" : node.title;
+                for (int[] span : findInText(title, term, wholeWords, caseSensitive)) {
+                    results.add(new SearchResult(node, span[0], span[1] - span[0], true, snippet(title, span[0], span[1] - span[0])));
                 }
             }
             String plain = RtfUtils.rtfToPlainText(node.rtf == null ? "" : node.rtf);
