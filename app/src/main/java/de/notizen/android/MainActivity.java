@@ -205,7 +205,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.111-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.112-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -287,6 +287,7 @@ public final class MainActivity extends Activity {
     private TextView rootTitleView;
     private EditText titleEdit;
     private EditText editor;
+    private WebView markdownPreviewWebView;
     private LinearLayout quickSearchBar;
     private EditText quickSearchInput;
     private CheckBox quickSearchWholeTree;
@@ -333,6 +334,10 @@ public final class MainActivity extends Activity {
     private boolean markdownPreviewActive = false;
     private NoteNode markdownPreviewNode;
     private String markdownPreviewSourceRtf = "";
+    private int markdownPreviewReturnSelectionStart = -1;
+    private int markdownPreviewReturnSelectionEnd = -1;
+    private int markdownPreviewReturnScrollX = 0;
+    private int markdownPreviewReturnScrollY = 0;
     private KeyListener editorEditableKeyListener;
     private NoteNode treeDragSource;
     private NoteNode treeDragPreviewTarget;
@@ -378,6 +383,10 @@ public final class MainActivity extends Activity {
         boolean markdownPreviewActive;
         NoteNode markdownPreviewNode;
         String markdownPreviewSourceRtf;
+        int markdownPreviewReturnSelectionStart;
+        int markdownPreviewReturnSelectionEnd;
+        int markdownPreviewReturnScrollX;
+        int markdownPreviewReturnScrollY;
     }
 
     /**
@@ -776,6 +785,10 @@ public final class MainActivity extends Activity {
             markdownPreviewActive = false;
             markdownPreviewNode = retained.markdownPreviewActive ? retained.markdownPreviewNode : null;
             markdownPreviewSourceRtf = retained.markdownPreviewSourceRtf == null ? "" : retained.markdownPreviewSourceRtf;
+            markdownPreviewReturnSelectionStart = retained.markdownPreviewReturnSelectionStart;
+            markdownPreviewReturnSelectionEnd = retained.markdownPreviewReturnSelectionEnd;
+            markdownPreviewReturnScrollX = retained.markdownPreviewReturnScrollX;
+            markdownPreviewReturnScrollY = retained.markdownPreviewReturnScrollY;
         } else {
             settings = AndroidSettingsStore.load(this);
             treePaneWidthDp = LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
@@ -844,6 +857,10 @@ public final class MainActivity extends Activity {
         retained.markdownPreviewActive = markdownPreviewActive;
         retained.markdownPreviewNode = markdownPreviewNode;
         retained.markdownPreviewSourceRtf = markdownPreviewSourceRtf;
+        retained.markdownPreviewReturnSelectionStart = markdownPreviewReturnSelectionStart;
+        retained.markdownPreviewReturnSelectionEnd = markdownPreviewReturnSelectionEnd;
+        retained.markdownPreviewReturnScrollX = markdownPreviewReturnScrollX;
+        retained.markdownPreviewReturnScrollY = markdownPreviewReturnScrollY;
         return retained;
     }
 
@@ -1154,6 +1171,17 @@ public final class MainActivity extends Activity {
             }
         });
         right.addView(editor, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        markdownPreviewWebView = new WebView(this);
+        markdownPreviewWebView.setVisibility(View.GONE);
+        markdownPreviewWebView.setBackgroundColor(Color.WHITE);
+        markdownPreviewWebView.setFocusable(true);
+        markdownPreviewWebView.setFocusableInTouchMode(true);
+        markdownPreviewWebView.getSettings().setJavaScriptEnabled(false);
+        markdownPreviewWebView.getSettings().setDomStorageEnabled(false);
+        markdownPreviewWebView.setWebViewClient(new WebViewClient());
+        right.addView(markdownPreviewWebView, new LinearLayout.LayoutParams(-1, 0, 1));
+
         content.addView(right, wide ? new LinearLayout.LayoutParams(0, -1, 1.0f) : new LinearLayout.LayoutParams(-1, 0, 1));
         if (wide) content.post(() -> applyTreePaneWidthPx(dp(treePaneWidthDp), false));
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -2005,6 +2033,7 @@ public final class MainActivity extends Activity {
         if (markdownPreviewActive && markdownPreviewNode == currentNode) return true;
         if (markdownPreviewActive) clearMarkdownPreviewState(false);
 
+        captureMarkdownPreviewReturnState();
         // First commit real editor changes to the node as RTF.  The preview then
         // works from raw text extracted from that RTF, while the RTF itself stays
         // untouched for later saving.
@@ -2016,15 +2045,7 @@ public final class MainActivity extends Activity {
             return false;
         }
 
-        SpannableStringBuilder rendered = renderMarkdownPreview(raw);
-        boolean oldLoading = loadingEditor;
-        loadingEditor = true;
-        try {
-            editor.setText(rendered);
-            editor.setSelection(0, 0);
-        } finally {
-            loadingEditor = oldLoading;
-        }
+        String html = LegacyMarkdownPreviewModel.toHtmlDocument(raw);
         markdownPreviewActive = true;
         markdownPreviewNode = currentNode;
         markdownPreviewSourceRtf = sourceRtf;
@@ -2032,9 +2053,10 @@ public final class MainActivity extends Activity {
         editorUndoStack.clear();
         editorRedoStack.clear();
         setEditorMarkdownReadOnly(true);
+        showMarkdownPreviewSurface(html);
         updateMarkdownPreviewButtonState();
         updateActivePaneChrome();
-        if (showStatus) status(LegacyMarkdownPreviewModel.statusForPreview(raw) + " · nur Anzeige, RTF bleibt erhalten");
+        if (showStatus) status(LegacyMarkdownPreviewModel.statusForPreview(raw) + " · HTML/Tabellen-Vorschau · RTF bleibt erhalten");
         return true;
     }
 
@@ -2042,12 +2064,15 @@ public final class MainActivity extends Activity {
         if (!markdownPreviewActive || editor == null) return;
         NoteNode node = markdownPreviewNode == null ? currentNode : markdownPreviewNode;
         String sourceRtf = node == null ? markdownPreviewSourceRtf : (node.rtf == null ? "" : node.rtf);
+        int returnStart = markdownPreviewReturnSelectionStart;
+        int returnEnd = markdownPreviewReturnSelectionEnd;
+        int returnScrollX = markdownPreviewReturnScrollX;
+        int returnScrollY = markdownPreviewReturnScrollY;
         clearMarkdownPreviewState(false);
         boolean oldLoading = loadingEditor;
         loadingEditor = true;
         try {
             editor.setText(rtfToEditorText(sourceRtf));
-            editor.setSelection(editor.getText().length());
         } finally {
             loadingEditor = oldLoading;
         }
@@ -2055,20 +2080,97 @@ public final class MainActivity extends Activity {
         editorUndoStack.clear();
         editorRedoStack.clear();
         setEditorMarkdownReadOnly(false);
+        restoreEditorCursorAfterMarkdownPreview(returnStart, returnEnd, returnScrollX, returnScrollY);
         updateMarkdownPreviewButtonState();
         updateActivePaneChrome();
-        if (showStatus) status("Markdown-Vorschau aus · ursprünglicher RTF-Inhalt wieder sichtbar");
+        if (showStatus) status("Markdown-Vorschau aus · ursprünglicher RTF-Inhalt wieder sichtbar und Cursor aktiv");
     }
 
     private void clearMarkdownPreviewState(boolean updateUi) {
         markdownPreviewActive = false;
         markdownPreviewNode = null;
         markdownPreviewSourceRtf = "";
+        markdownPreviewReturnSelectionStart = -1;
+        markdownPreviewReturnSelectionEnd = -1;
+        markdownPreviewReturnScrollX = 0;
+        markdownPreviewReturnScrollY = 0;
+        hideMarkdownPreviewSurface();
         setEditorMarkdownReadOnly(false);
         if (updateUi) {
             updateMarkdownPreviewButtonState();
             updateActivePaneChrome();
         }
+    }
+
+    private void captureMarkdownPreviewReturnState() {
+        if (editor == null) {
+            markdownPreviewReturnSelectionStart = -1;
+            markdownPreviewReturnSelectionEnd = -1;
+            markdownPreviewReturnScrollX = 0;
+            markdownPreviewReturnScrollY = 0;
+            return;
+        }
+        int len = editor.getText() == null ? 0 : editor.getText().length();
+        int start = Math.max(0, Math.min(editor.getSelectionStart(), len));
+        int end = Math.max(start, Math.min(editor.getSelectionEnd(), len));
+        markdownPreviewReturnSelectionStart = start;
+        markdownPreviewReturnSelectionEnd = end;
+        markdownPreviewReturnScrollX = editor.getScrollX();
+        markdownPreviewReturnScrollY = editor.getScrollY();
+    }
+
+    private void showMarkdownPreviewSurface(String html) {
+        if (editor != null) {
+            editor.clearFocus();
+            editor.setVisibility(View.GONE);
+        }
+        if (markdownPreviewWebView != null) {
+            markdownPreviewWebView.setVisibility(View.VISIBLE);
+            markdownPreviewWebView.loadDataWithBaseURL("https://notizen.local/", html == null ? "" : html, "text/html", "UTF-8", null);
+            markdownPreviewWebView.requestFocus();
+        }
+    }
+
+    private void hideMarkdownPreviewSurface() {
+        if (markdownPreviewWebView != null) {
+            markdownPreviewWebView.loadDataWithBaseURL("about:blank", "<html><body></body></html>", "text/html", "UTF-8", null);
+            markdownPreviewWebView.setVisibility(View.GONE);
+            markdownPreviewWebView.clearFocus();
+        }
+        if (editor != null) editor.setVisibility(View.VISIBLE);
+    }
+
+    private void restoreEditorCursorAfterMarkdownPreview(int start, int end, int scrollX, int scrollY) {
+        if (editor == null) return;
+        int len = editor.getText() == null ? 0 : editor.getText().length();
+        int s = start >= 0 ? Math.max(0, Math.min(start, len)) : len;
+        int e = end >= 0 ? Math.max(s, Math.min(end, len)) : s;
+        editor.setVisibility(View.VISIBLE);
+        editor.setEnabled(true);
+        editor.setFocusable(true);
+        editor.setFocusableInTouchMode(true);
+        editor.setTextIsSelectable(false);
+        if (editorEditableKeyListener != null) editor.setKeyListener(editorEditableKeyListener);
+        editor.setCursorVisible(true);
+        editor.requestFocus();
+        editor.setSelection(s, e);
+        editor.scrollTo(Math.max(0, scrollX), Math.max(0, scrollY));
+        setFormatTarget(FormatTarget.RTF_EDITOR);
+        editor.post(() -> {
+            if (editor == null) return;
+            editor.setVisibility(View.VISIBLE);
+            editor.setEnabled(true);
+            editor.setFocusable(true);
+            editor.setFocusableInTouchMode(true);
+            editor.setTextIsSelectable(false);
+            if (editorEditableKeyListener != null) editor.setKeyListener(editorEditableKeyListener);
+            editor.setCursorVisible(true);
+            editor.requestFocus();
+            int postLen = editor.getText() == null ? 0 : editor.getText().length();
+            int ps = Math.max(0, Math.min(s, postLen));
+            int pe = Math.max(ps, Math.min(e, postLen));
+            try { editor.setSelection(ps, pe); } catch (Exception ignored) {}
+        });
     }
 
     private void setEditorMarkdownReadOnly(boolean readOnly) {
@@ -2081,11 +2183,12 @@ public final class MainActivity extends Activity {
             editor.setFocusable(true);
             editor.setFocusableInTouchMode(true);
         } else {
-            if (editorEditableKeyListener != null) editor.setKeyListener(editorEditableKeyListener);
-            editor.setCursorVisible(true);
+            editor.setEnabled(true);
             editor.setTextIsSelectable(false);
+            if (editorEditableKeyListener != null) editor.setKeyListener(editorEditableKeyListener);
             editor.setFocusable(true);
             editor.setFocusableInTouchMode(true);
+            editor.setCursorVisible(true);
         }
     }
 
@@ -2095,7 +2198,7 @@ public final class MainActivity extends Activity {
         markdownPreviewButton.setTextColor(markdownPreviewActive ? Color.rgb(20, 72, 145) : Color.rgb(30, 42, 58));
         markdownPreviewButton.setContentDescription(markdownPreviewActive
                 ? "Markdown-Vorschau ausschalten und ursprünglichen RTF-Inhalt anzeigen"
-                : "Markdown aus RTF-Rohtext schreibgeschützt anzeigen");
+                : "Markdown aus RTF-Rohtext als HTML mit Tabellen schreibgeschützt anzeigen");
     }
 
     private boolean blockEditorMutationWhileMarkdownPreview() {
