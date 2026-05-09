@@ -48,8 +48,16 @@ public final class TreeListAdapter extends BaseAdapter {
     private InlineEditListener inlineEditListener;
     private NoteNode dropPreviewNode;
     private DropPreview dropPreview = DropPreview.NONE;
+    private float defaultTreeTextSizeSp = 16f;
 
     public TreeListAdapter(Context context) { this.context = context; }
+
+    public void setDefaultTreeTextSizeSp(float sizeSp) {
+        float next = Math.max(8f, Math.min(42f, sizeSp <= 0f ? 16f : sizeSp));
+        if (Math.abs(defaultTreeTextSizeSp - next) < 0.01f) return;
+        defaultTreeTextSizeSp = next;
+        notifyDataSetChanged();
+    }
 
     public void setRows(List<FlatNode> newRows) {
         rows.clear();
@@ -221,12 +229,12 @@ public final class TreeListAdapter extends BaseAdapter {
     }
 
     private float treeTextSize(NoteNode node) {
-        if (node == null) return 16f;
+        if (node == null) return defaultTreeTextSizeSp;
         try {
             int size = Integer.parseInt(String.valueOf(node.extraAttrs.get(NODE_TITLE_SIZE_ATTR)).trim());
             return Math.max(8, Math.min(42, LegacyRichTextToolbar.normalizeFontSize(size)));
         } catch (Exception ignored) {
-            return 16f;
+            return defaultTreeTextSizeSp;
         }
     }
 

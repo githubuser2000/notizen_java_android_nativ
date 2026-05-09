@@ -406,3 +406,15 @@ GPLv3, passend zu den Ausgangsarchiven.
 - Aktiver Bereich wird sichtbarer markiert: Baum, Titelzeile und RTF-Box bekommen klarere aktive Rahmen; der Baumadapter kennt aktive Auswahl und Drop-Vorschau.
 - Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.
 
+
+## v108
+
+- Version erhöht auf `versionCode 108` / `versionName 1.0.108-java-android-nativ`.
+- Haftnotizen/Widgets wurden Android-gerechter weitergeführt: Widgets merken jetzt den ALX-Knotenpfad, Dokumentnamen, Farben und Textgröße und können beim Speichern anhand des aktuellen Dokuments aktualisiert werden. Tippen auf ein Widget öffnet die App wieder beim passenden Knoten.
+- Die Widget-Liste wurde ausgebaut: vorhandene Startbildschirm-Widgets können angezeigt werden; die Aktion `Haftliste` nutzt diese Übersicht.
+- Export, Teilen und Drucken wurden in einen gemeinsamen `Export`-Dialog zusammengeführt: aktueller Knoten, aktueller Teilbaum oder ganzer Baum können als TXT, ANSI-TXT, Unicode-TXT, HTML oder RTF gespeichert oder über Android geteilt werden.
+- Für das Teilen wurde ein privater `ExportFileProvider` ergänzt, damit Exportdateien sauber als `content://`-URI mit Leserechten statt als unsicherer Dateipfad an andere Android-Apps gehen.
+- Drucken/PDF wurde um eine HTML-Vorschau erweitert; aus der Vorschau kann direkt gedruckt/PDF erzeugt oder HTML geteilt werden.
+- Die Einstellungen wurden erweitert und scrollbar gemacht: Standardordner, Toolbar-Größe, Kopfzeilen-Schriftgröße, Baum-/Editor-/Widget-Schriftgrößen, Bild-Verkleinerungsgrenze, automatische Bildverkleinerung, Crash-Wiederherstellung und Diagnosebuttons sind nun direkt konfigurierbar.
+- Große Bilder verwenden die neue einstellbare Maximal-Kantenlänge; die automatische Verkleinerung kann über die Android-Einstellungen an- und ausgeschaltet werden.
+- Kernvalidierung: `./tools/run_core_tests.sh` meldet `Core tests OK`; Buildskripte wurden per `bash -n` geprüft.

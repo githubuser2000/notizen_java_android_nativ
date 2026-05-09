@@ -58,6 +58,13 @@ public final class LegacySettings {
     public int androidTreePaneWidthDp = 280;
     public int androidToolbarButtonDp = LegacyTouchZoomModel.DEFAULT_TOOLBAR_BUTTON_DP;
     public float androidHeaderTextSp = LegacyTouchZoomModel.DEFAULT_HEADER_TEXT_SP;
+    public float androidTreeTextSp = 16f;
+    public float androidEditorTextSp = 17f;
+    public float androidWidgetTextSp = 13f;
+    public int androidLargeImageLongEdgePx = LegacyTouchZoomModel.MAX_EMBED_IMAGE_LONG_EDGE_PX;
+    public boolean androidAutoDownsampleLargeImages = true;
+    public boolean androidRestoreRuntimeSnapshot = true;
+    public boolean androidShowDiagnosticsToolbar = true;
     public long feedbackDayTicks = 0L;
     public int feedbackCount = 0;
     public final Map<String, int[]> toolstripPositions = defaultToolstripPositions();
@@ -95,6 +102,13 @@ public final class LegacySettings {
         s.androidTreePaneWidthDp = androidTreePaneWidthDp;
         s.androidToolbarButtonDp = androidToolbarButtonDp;
         s.androidHeaderTextSp = androidHeaderTextSp;
+        s.androidTreeTextSp = androidTreeTextSp;
+        s.androidEditorTextSp = androidEditorTextSp;
+        s.androidWidgetTextSp = androidWidgetTextSp;
+        s.androidLargeImageLongEdgePx = androidLargeImageLongEdgePx;
+        s.androidAutoDownsampleLargeImages = androidAutoDownsampleLargeImages;
+        s.androidRestoreRuntimeSnapshot = androidRestoreRuntimeSnapshot;
+        s.androidShowDiagnosticsToolbar = androidShowDiagnosticsToolbar;
         s.feedbackDayTicks = feedbackDayTicks;
         s.feedbackCount = feedbackCount;
         s.toolstripPositions.clear();
@@ -131,6 +145,28 @@ public final class LegacySettings {
 
     public static float normalizeAndroidHeaderTextSp(float value) {
         return LegacyTouchZoomModel.normalizeHeaderTextSp(value);
+    }
+
+    public static float normalizeAndroidTreeTextSp(float value) {
+        return normalizeSp(value, 8f, 42f, 16f);
+    }
+
+    public static float normalizeAndroidEditorTextSp(float value) {
+        return normalizeSp(value, 8f, 48f, 17f);
+    }
+
+    public static float normalizeAndroidWidgetTextSp(float value) {
+        return LegacyAndroidWidgetRegistry.normalizeWidgetTextSp(value);
+    }
+
+    public static int normalizeAndroidLargeImageLongEdgePx(int value) {
+        if (value <= 0) return LegacyTouchZoomModel.MAX_EMBED_IMAGE_LONG_EDGE_PX;
+        return Math.max(480, Math.min(4096, value));
+    }
+
+    private static float normalizeSp(float value, float min, float max, float fallback) {
+        if (Float.isNaN(value) || Float.isInfinite(value) || value <= 0f) return fallback;
+        return Math.max(min, Math.min(max, value));
     }
 
     public static String normalizeWindowState(String value) {
@@ -320,6 +356,13 @@ public final class LegacySettings {
             androidTreePaneWidthDp = normalizeAndroidTreePaneWidthDp(asInt(androidUi.getAttribute("treepane-width-dp"), androidTreePaneWidthDp));
             androidToolbarButtonDp = normalizeAndroidToolbarButtonDp(asInt(androidUi.getAttribute("toolbar-button-dp"), androidToolbarButtonDp));
             androidHeaderTextSp = normalizeAndroidHeaderTextSp(asFloat(androidUi.getAttribute("header-text-sp"), androidHeaderTextSp));
+            androidTreeTextSp = normalizeAndroidTreeTextSp(asFloat(androidUi.getAttribute("tree-text-sp"), androidTreeTextSp));
+            androidEditorTextSp = normalizeAndroidEditorTextSp(asFloat(androidUi.getAttribute("editor-text-sp"), androidEditorTextSp));
+            androidWidgetTextSp = normalizeAndroidWidgetTextSp(asFloat(androidUi.getAttribute("widget-text-sp"), androidWidgetTextSp));
+            androidLargeImageLongEdgePx = normalizeAndroidLargeImageLongEdgePx(asInt(androidUi.getAttribute("large-image-long-edge-px"), androidLargeImageLongEdgePx));
+            androidAutoDownsampleLargeImages = asBool(attr(androidUi, "auto-downsample-large-images", String.valueOf(androidAutoDownsampleLargeImages)), androidAutoDownsampleLargeImages);
+            androidRestoreRuntimeSnapshot = asBool(attr(androidUi, "restore-runtime-snapshot", String.valueOf(androidRestoreRuntimeSnapshot)), androidRestoreRuntimeSnapshot);
+            androidShowDiagnosticsToolbar = asBool(attr(androidUi, "show-diagnostics-toolbar", String.valueOf(androidShowDiagnosticsToolbar)), androidShowDiagnosticsToolbar);
         }
     }
 
@@ -344,7 +387,14 @@ public final class LegacySettings {
         append(doc, root, "android-ui", attrsFor("android-ui", map(
                 "treepane-width-dp", String.valueOf(normalizeAndroidTreePaneWidthDp(androidTreePaneWidthDp)),
                 "toolbar-button-dp", String.valueOf(normalizeAndroidToolbarButtonDp(androidToolbarButtonDp)),
-                "header-text-sp", trimFloat(normalizeAndroidHeaderTextSp(androidHeaderTextSp)))));
+                "header-text-sp", trimFloat(normalizeAndroidHeaderTextSp(androidHeaderTextSp)),
+                "tree-text-sp", trimFloat(normalizeAndroidTreeTextSp(androidTreeTextSp)),
+                "editor-text-sp", trimFloat(normalizeAndroidEditorTextSp(androidEditorTextSp)),
+                "widget-text-sp", trimFloat(normalizeAndroidWidgetTextSp(androidWidgetTextSp)),
+                "large-image-long-edge-px", String.valueOf(normalizeAndroidLargeImageLongEdgePx(androidLargeImageLongEdgePx)),
+                "auto-downsample-large-images", yesNo(androidAutoDownsampleLargeImages),
+                "restore-runtime-snapshot", yesNo(androidRestoreRuntimeSnapshot),
+                "show-diagnostics-toolbar", yesNo(androidShowDiagnosticsToolbar))));
         Element stripes = append(doc, root, "tool-stripes", attrsFor("tool-stripes", new LinkedHashMap<String, String>()));
         for (String name : new String[]{"haupt", "elements", "font", "cutpastecopy"}) {
             int[] pos = toolstripPositions.get(name);
@@ -366,7 +416,8 @@ public final class LegacySettings {
                 "Backups behalten: " + backupKeep + "\n" +
                 "Autosave: " + autosaveSeconds + " s\n" +
                 "FTP: " + (ftpHost == null || ftpHost.isEmpty() ? "-" : ftpHost + ftpPath) + "\n" +
-                "Zuletzt: " + recentFiles;
+                "Zuletzt: " + recentFiles + "\n" +
+                LegacyAndroidSettingsUiModel.summary(this);
     }
 
     private static void copyNestedStringMap(Map<String, Map<String, String>> src, Map<String, Map<String, String>> dst) {
@@ -453,7 +504,9 @@ public final class LegacySettings {
         if ("minimized-show-in".equals(path)) return new LinkedHashSet<>(Arrays.asList("taskbar"));
         if ("tray".equals(path)) return new LinkedHashSet<>(Arrays.asList("gnome-safe-start", "gnome_safe_start"));
         if ("main-form".equals(path)) return new LinkedHashSet<>(Arrays.asList("x", "y", "width", "height", "windowstate"));
-        if ("android-ui".equals(path)) return new LinkedHashSet<>(Arrays.asList("treepane-width-dp", "toolbar-button-dp", "header-text-sp"));
+        if ("android-ui".equals(path)) return new LinkedHashSet<>(Arrays.asList("treepane-width-dp", "toolbar-button-dp", "header-text-sp",
+                "tree-text-sp", "editor-text-sp", "widget-text-sp", "large-image-long-edge-px",
+                "auto-downsample-large-images", "restore-runtime-snapshot", "show-diagnostics-toolbar"));
         if ("open/once-opened".equals(path)) return new LinkedHashSet<>(Arrays.asList("file", "timestamp"));
         if (path.startsWith("tool-stripes/")) return new LinkedHashSet<>(Arrays.asList("x", "y"));
         return new LinkedHashSet<>();

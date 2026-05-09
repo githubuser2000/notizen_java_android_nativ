@@ -108,6 +108,9 @@ import de.notizen.android.core.Exporters;
 import de.notizen.android.core.FtpSyncError;
 import de.notizen.android.core.FtpTarget;
 import de.notizen.android.core.LegacyAutosave;
+import de.notizen.android.core.LegacyAndroidSettingsUiModel;
+import de.notizen.android.core.LegacyAndroidWidgetRegistry;
+import de.notizen.android.core.LegacyExportShareModel;
 import de.notizen.android.core.LegacyColors;
 import de.notizen.android.core.LegacyDesktopNoteContextMenu;
 import de.notizen.android.core.LegacyDialogModels;
@@ -192,7 +195,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.107-java-android-nativ";
+    private static final String APP_VERSION_NAME = "1.0.108-java-android-nativ";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";
@@ -233,6 +236,7 @@ public final class MainActivity extends Activity {
     private static final int REQ_EXPORT_NODE_RTF = 1013;
     private static final int REQ_EXPORT_TEXT_ANSI = 1014;
     private static final int REQ_EXPORT_TEXT_UNICODE = 1015;
+    private static final int REQ_EXPORT_GENERIC = 1016;
 
     private NoteDocument document = NoteDocument.newDocument();
     private NoteNode currentNode;
@@ -244,6 +248,12 @@ public final class MainActivity extends Activity {
     private String pendingExportHtml;
     private String pendingExportRtf;
     private byte[] pendingExportConfig;
+    private byte[] pendingGenericExportBytes;
+    private String pendingGenericExportMime;
+    private String pendingGenericExportFileName;
+    private String pendingGenericExportStatus;
+    private String pendingGenericExportShareText;
+    private String pendingWidgetNodePath;
     private NoteNode internalClipboardNode;
     private SpannableStringBuilder internalEditorClipboard;
     private String internalEditorClipboardPlain = "";
@@ -542,8 +552,9 @@ public final class MainActivity extends Activity {
             treePaneWidthDp = LegacySettings.normalizeAndroidTreePaneWidthDp(settings.androidTreePaneWidthDp);
             toolbarButtonDp = LegacySettings.normalizeAndroidToolbarButtonDp(settings.androidToolbarButtonDp);
             headerTextSp = LegacySettings.normalizeAndroidHeaderTextSp(settings.androidHeaderTextSp);
-            if (!hasOpenIntent) runtimeSnapshotRestored = restoreRuntimeSnapshotIfPresent();
+            if (!hasOpenIntent && settings.androidRestoreRuntimeSnapshot) runtimeSnapshotRestored = restoreRuntimeSnapshotIfPresent();
         }
+        pendingWidgetNodePath = widgetNodePathFromIntent(getIntent());
         ioExecutor = Executors.newSingleThreadExecutor();
         mainHandler = new Handler(Looper.getMainLooper());
         installCrashSnapshotHandler();
@@ -559,10 +570,12 @@ public final class MainActivity extends Activity {
                 editor.setSelection(start, end);
             }
             updateTitle();
+            selectPendingWidgetNodeIfAny();
         } else {
             selectNode(currentNode == null ? document.ensureRoot() : currentNode, false);
             boolean openedByIntent = handleViewIntent(getIntent());
             if (!openedByIntent) consumeOpenOnceFileIfPresent();
+            selectPendingWidgetNodeIfAny();
         }
         scheduleAutosaveTick();
         scheduleRuntimeSnapshotSave();
@@ -638,6 +651,11 @@ public final class MainActivity extends Activity {
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        if (isWidgetOpenIntent(intent)) {
+            pendingWidgetNodePath = widgetNodePathFromIntent(intent);
+            selectPendingWidgetNodeIfAny();
+            return;
+        }
         handleViewIntent(intent);
     }
 
@@ -667,13 +685,14 @@ public final class MainActivity extends Activity {
         addButton(fileToolbar, "Speichern unter", v -> saveDocumentAs());
         addButton(fileToolbar, "Sicherungen", v -> showBackups());
         addButton(fileToolbar, "Einstellungen", v -> showSettingsDialog());
-        addButton(fileToolbar, "Config", v -> showConfigSnapshot());
+        if (settings == null || settings.androidShowDiagnosticsToolbar) addButton(fileToolbar, "Config", v -> showConfigSnapshot());
         addButton(fileToolbar, "FTP öffnen", v -> showFtpDialog(false));
         addButton(fileToolbar, "FTP speichern", v -> showFtpDialog(true));
         addButton(fileToolbar, "Schließen", v -> closeDocumentLegacy());
-        addButton(fileToolbar, "Status", v -> showLifecycleStatus());
+        if (settings == null || settings.androidShowDiagnosticsToolbar) addButton(fileToolbar, "Status", v -> showLifecycleStatus());
         addButton(fileToolbar, "Vorschau", v -> showRichPreview());
         addButton(fileToolbar, "Drucken", v -> showPrintDialog());
+        addButton(fileToolbar, "Export", v -> showExportHubDialog());
         addButton(fileToolbar, "Suche", v -> showSearchDialog());
         addButton(fileToolbar, "Export TXT", v -> exportText());
         addButton(fileToolbar, "Export ANSI", v -> exportTextAnsi());
@@ -687,17 +706,19 @@ public final class MainActivity extends Activity {
         addButton(fileToolbar, "Passwort", v -> showPasswordChangeDialog());
         addButton(fileToolbar, "Statistik", v -> showStats());
         addButton(fileToolbar, "Validieren", v -> showValidationSummary());
-        addButton(fileToolbar, "Diagnose", v -> showDiagnostics());
-        addButton(fileToolbar, "Layout", v -> showLayoutDiagnostics());
-        addButton(fileToolbar, "Launcher", v -> showRuntimeIdentity());
-        addButton(fileToolbar, "Dialoge", v -> showActivationFocusModel());
-        addButton(fileToolbar, "Toolbars", v -> showToolbarToggleModel());
-        addButton(fileToolbar, "Fenster", v -> showWindowChromeModel());
-        addButton(fileToolbar, "Autosave", v -> showAutosaveTickModel());
-        addButton(fileToolbar, "Fontplan", v -> showLegacyFontSetModel());
-        addButton(fileToolbar, "Maus", v -> showWindowMoveResizeModel());
-        addButton(fileToolbar, "ALX Pipe", v -> showAlxPipelineModel());
-        addButton(fileToolbar, "Buildplan", v -> showApkBuildPlan());
+        if (settings == null || settings.androidShowDiagnosticsToolbar) {
+            addButton(fileToolbar, "Diagnose", v -> showDiagnostics());
+            addButton(fileToolbar, "Layout", v -> showLayoutDiagnostics());
+            addButton(fileToolbar, "Launcher", v -> showRuntimeIdentity());
+            addButton(fileToolbar, "Dialoge", v -> showActivationFocusModel());
+            addButton(fileToolbar, "Toolbars", v -> showToolbarToggleModel());
+            addButton(fileToolbar, "Fenster", v -> showWindowChromeModel());
+            addButton(fileToolbar, "Autosave", v -> showAutosaveTickModel());
+            addButton(fileToolbar, "Fontplan", v -> showLegacyFontSetModel());
+            addButton(fileToolbar, "Maus", v -> showWindowMoveResizeModel());
+            addButton(fileToolbar, "ALX Pipe", v -> showAlxPipelineModel());
+            addButton(fileToolbar, "Buildplan", v -> showApkBuildPlan());
+        }
         addButton(fileToolbar, "Feedback", v -> showFeedbackDialog());
         addButton(fileToolbar, "Info", v -> showInfo());
 
@@ -784,6 +805,7 @@ public final class MainActivity extends Activity {
         treeList.setBackground(roundedBackground(Color.WHITE, Color.rgb(220, 225, 232), 8));
         treeList.setDividerHeight(1);
         treeAdapter = new TreeListAdapter(this);
+        treeAdapter.setDefaultTreeTextSizeSp(settings == null ? 16f : LegacySettings.normalizeAndroidTreeTextSp(settings.androidTreeTextSp));
         treeList.setAdapter(treeAdapter);
         final float[] lastTreeTouchX = new float[]{-1f};
         treeList.setOnTouchListener((view, event) -> {
@@ -859,7 +881,7 @@ public final class MainActivity extends Activity {
         right.addView(titleEdit, new LinearLayout.LayoutParams(-1, dp(CONTENT_HEADER_DP)));
 
         editor = new TrackingEditText(this);
-        editor.setTextSize(17f);
+        editor.setTextSize(settings == null ? 17f : LegacySettings.normalizeAndroidEditorTextSp(settings.androidEditorTextSp));
         editor.setGravity(Gravity.TOP | Gravity.START);
         editor.setMinLines(12);
         editor.setSingleLine(false);
@@ -902,6 +924,29 @@ public final class MainActivity extends Activity {
 
     private boolean isOpenDocumentIntent(Intent intent) {
         return intent != null && intent.getData() != null && Intent.ACTION_VIEW.equals(intent.getAction());
+    }
+
+    private boolean isWidgetOpenIntent(Intent intent) {
+        return intent != null && NoteWidgetProvider.ACTION_OPEN_WIDGET_NODE.equals(intent.getAction());
+    }
+
+    private String widgetNodePathFromIntent(Intent intent) {
+        if (!isWidgetOpenIntent(intent)) return null;
+        return intent.getStringExtra(NoteWidgetProvider.EXTRA_NODE_PATH);
+    }
+
+    private void selectPendingWidgetNodeIfAny() {
+        if (pendingWidgetNodePath == null) return;
+        String path = pendingWidgetNodePath;
+        pendingWidgetNodePath = null;
+        NoteNode target = LegacyAndroidWidgetRegistry.nodeByIndexPath(document == null ? null : document.ensureRoot(), path);
+        if (target == null) target = document == null ? null : document.ensureRoot();
+        if (target != null) {
+            ensureAncestorsExpanded(target);
+            rebuildTree();
+            selectNode(target, true);
+            status("Haftnotiz-Widget geöffnet: " + safeTitle(target));
+        }
     }
 
     private void installCrashSnapshotHandler() {
@@ -1815,6 +1860,7 @@ public final class MainActivity extends Activity {
             titleDirty = false;
             updateTitle();
             saveRuntimeSnapshotNow(false);
+            updateAndroidWidgetsFromDocument();
             status("Gespeichert: " + currentDisplayName);
         } catch (Exception e) {
             error("Speichern fehlgeschlagen", e.getMessage());
@@ -1845,6 +1891,7 @@ public final class MainActivity extends Activity {
             titleDirty = false;
             updateTitle();
             saveRuntimeSnapshotNow(false);
+            updateAndroidWidgetsFromDocument();
             status((autosave ? "Autosave" : "Gespeichert") + ": " + file.getAbsolutePath());
         } catch (Exception e) {
             error(autosave ? "Autosave fehlgeschlagen" : "Speichern fehlgeschlagen", e.getMessage());
@@ -1970,9 +2017,12 @@ public final class MainActivity extends Activity {
     private void showSettingsDialog() {
         if (settings == null) settings = AndroidSettingsStore.load(this);
         LegacySettingsDialogModel.ViewState state = LegacySettingsDialogModel.fromSettings(settings);
+        LegacyAndroidSettingsUiModel.ViewState androidState = LegacyAndroidSettingsUiModel.fromSettings(settings);
+        ScrollView scroll = new ScrollView(this);
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(12), 0, dp(12), 0);
+        scroll.addView(box, new ScrollView.LayoutParams(-1, -2));
         EditText language = labeledEdit(box, "Sprache", state.language);
         TextView languages = new TextView(this);
         languages.setText("Sprachen: " + LegacyI18n.availableLanguageLabels());
@@ -2007,6 +2057,31 @@ public final class MainActivity extends Activity {
         showBorders.setChecked(state.showDesknoteBorders);
         box.addView(showBorders);
 
+        TextView androidHeader = new TextView(this);
+        androidHeader.setText("Android-Oberfläche / Import / Wiederherstellung");
+        androidHeader.setTypeface(Typeface.DEFAULT_BOLD);
+        androidHeader.setPadding(0, dp(10), 0, dp(3));
+        box.addView(androidHeader);
+        EditText defaultDirectory = labeledEdit(box, "Standardordner / letzter Ordner", androidState.defaultDirectory);
+        EditText toolbarDp = labeledEdit(box, "Icon-Button-Größe dp", androidState.toolbarButtonDp);
+        EditText headerSp = labeledEdit(box, "gelbe Überschriften Textgröße sp", androidState.headerTextSp);
+        EditText treeSp = labeledEdit(box, "Baum-Schriftgröße sp", androidState.treeTextSp);
+        EditText editorSp = labeledEdit(box, "RTF-Editor Standard-Schriftgröße sp", androidState.editorTextSp);
+        EditText widgetSp = labeledEdit(box, "Android-Widget Schriftgröße sp", androidState.widgetTextSp);
+        EditText imageEdge = labeledEdit(box, "große Bilder verkleinern auf max. Kantenlänge px", androidState.largeImageLongEdgePx);
+        CheckBox autoDownsample = new CheckBox(this);
+        autoDownsample.setText("Große Bilder automatisch verkleinern");
+        autoDownsample.setChecked(androidState.autoDownsampleLargeImages);
+        box.addView(autoDownsample);
+        CheckBox restoreSnapshot = new CheckBox(this);
+        restoreSnapshot.setText("Nach Absturz letzten Stand wiederherstellen");
+        restoreSnapshot.setChecked(androidState.restoreRuntimeSnapshot);
+        box.addView(restoreSnapshot);
+        CheckBox showDiagnosticsToolbar = new CheckBox(this);
+        showDiagnosticsToolbar.setText("Diagnose-/Entwicklungsbuttons oben anzeigen");
+        showDiagnosticsToolbar.setChecked(androidState.showDiagnosticsToolbar);
+        box.addView(showDiagnosticsToolbar);
+
         autosaveEnabled.setOnCheckedChangeListener((button, checked) -> {
             LegacySettingsDialogModel.ViewState next = LegacySettingsDialogModel.onAutosaveChanged(
                     new LegacySettingsDialogModel.ViewState(language.getText().toString(), backupKeep.getText().toString(),
@@ -2037,10 +2112,12 @@ public final class MainActivity extends Activity {
         box.addView(recent);
         new AlertDialog.Builder(this)
                 .setTitle("Einstellungen")
-                .setView(box)
+                .setView(scroll)
                 .setNeutralButton("Config importieren", (d, which) -> importSettingsFile())
                 .setNegativeButton("Abbrechen", null)
                 .setPositiveButton("OK", (d, which) -> {
+                    saveCurrentEditorToNode();
+                    boolean oldShowDiagnostics = settings == null || settings.androidShowDiagnosticsToolbar;
                     LegacySettingsDialogModel.ApplyResult result = LegacySettingsDialogModel.apply(
                             settings,
                             language.getText().toString(),
@@ -2052,9 +2129,36 @@ public final class MainActivity extends Activity {
                             showTaskbar.isChecked(),
                             showBorders.isChecked());
                     settings = result.settings;
+                    LegacyAndroidSettingsUiModel.ApplyResult androidResult = LegacyAndroidSettingsUiModel.apply(
+                            settings,
+                            defaultDirectory.getText().toString(),
+                            toolbarDp.getText().toString(),
+                            headerSp.getText().toString(),
+                            treeSp.getText().toString(),
+                            editorSp.getText().toString(),
+                            widgetSp.getText().toString(),
+                            imageEdge.getText().toString(),
+                            autoDownsample.isChecked(),
+                            restoreSnapshot.isChecked(),
+                            showDiagnosticsToolbar.isChecked());
+                    settings = androidResult.settings;
+                    toolbarButtonDp = LegacySettings.normalizeAndroidToolbarButtonDp(settings.androidToolbarButtonDp);
+                    headerTextSp = LegacySettings.normalizeAndroidHeaderTextSp(settings.androidHeaderTextSp);
+                    applyToolbarButtonSize();
+                    applyHeaderTextSize();
+                    if (treeAdapter != null) treeAdapter.setDefaultTreeTextSizeSp(LegacySettings.normalizeAndroidTreeTextSp(settings.androidTreeTextSp));
+                    if (editor != null) editor.setTextSize(LegacySettings.normalizeAndroidEditorTextSp(settings.androidEditorTextSp));
                     AndroidSettingsStore.save(this, settings);
                     scheduleAutosaveTick();
-                    status(result.warnings.isEmpty() ? "Einstellungen gespeichert" : "Einstellungen gespeichert\n" + joinLines(result.warnings));
+                    boolean newShowDiagnostics = settings == null || settings.androidShowDiagnosticsToolbar;
+                    if (oldShowDiagnostics != newShowDiagnostics) {
+                        buildUi();
+                        selectNode(currentNode == null ? document.ensureRoot() : currentNode, false);
+                    }
+                    ArrayList<String> warnings = new ArrayList<>();
+                    warnings.addAll(result.warnings);
+                    warnings.addAll(androidResult.warnings);
+                    status(warnings.isEmpty() ? "Einstellungen gespeichert" : "Einstellungen gespeichert\n" + joinLines(warnings));
                 })
                 .show();
     }
@@ -2162,6 +2266,7 @@ public final class MainActivity extends Activity {
             titleDirty = false;
             updateTitle();
             saveRuntimeSnapshotNow(false);
+            updateAndroidWidgetsFromDocument();
             status("FTP gespeichert: " + result.safeDisplayUrl());
             if (afterSave != null && !document.changed) afterSave.run();
         });
@@ -2793,7 +2898,7 @@ public final class MainActivity extends Activity {
 
     private void desktopNoteTrayForActiveMiddleTarget() {
         if (!requireTreePaneForMiddleAction("Haftliste")) return;
-        showDesktopNoteTrayList();
+        showAndroidWidgetList();
     }
 
     private void clearDesktopNotesForActiveMiddleTarget() {
@@ -4013,7 +4118,11 @@ public final class MainActivity extends Activity {
         boolean hasBounds = bounds != null && bounds.outWidth > 0 && bounds.outHeight > 0;
         long sourceBytes = queryOpenableSize(uri);
         boolean supportedMime = isRtfSupportedImageMime(mime);
-        if (hasBounds && LegacyTouchZoomModel.shouldDownsampleForRtf(bounds.outWidth, bounds.outHeight, Math.max(0L, sourceBytes), supportedMime)) {
+        int configuredLongEdge = settings == null ? MAX_EMBED_IMAGE_LONG_EDGE_PX : LegacySettings.normalizeAndroidLargeImageLongEdgePx(settings.androidLargeImageLongEdgePx);
+        boolean autoDownsample = settings == null || settings.androidAutoDownsampleLargeImages;
+        boolean tooLargeByBytes = sourceBytes > MAX_EMBEDDED_IMAGE_BYTES;
+        boolean tooLargeByPixels = hasBounds && LegacyTouchZoomModel.safeImageLongEdge(bounds.outWidth, bounds.outHeight) > configuredLongEdge;
+        if (hasBounds && (!supportedMime || tooLargeByBytes || (autoDownsample && tooLargeByPixels))) {
             return decodeCompressImageForRtf(uri, bounds, "Großes Bild speicherschonend verkleinert und eingefügt");
         }
 
@@ -4059,7 +4168,8 @@ public final class MainActivity extends Activity {
     private Bitmap decodeScaledBitmapFromUri(Uri uri, BitmapFactory.Options bounds, int maxLongEdge) throws Exception {
         int width = bounds == null ? 0 : bounds.outWidth;
         int height = bounds == null ? 0 : bounds.outHeight;
-        int sample = calculateImageSampleSize(width, height, maxLongEdge);
+        int configuredLongEdge = settings == null ? maxLongEdge : LegacySettings.normalizeAndroidLargeImageLongEdgePx(settings.androidLargeImageLongEdgePx);
+        int sample = calculateImageSampleSize(width, height, configuredLongEdge);
         for (int attempt = 0; attempt < 5; attempt++) {
             InputStream in = null;
             try {
@@ -4142,9 +4252,26 @@ public final class MainActivity extends Activity {
                     if (which == 1) job = LegacyPrintLayout.subtree(currentNode);
                     else if (which == 2) job = LegacyPrintLayout.root(document);
                     else job = LegacyPrintLayout.currentNote(currentNode);
-                    startPrintJob(job);
+                    showPrintPreview(job);
                 })
                 .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void showPrintPreview(LegacyPrintLayout.PrintJob job) {
+        if (job == null) return;
+        WebView web = new WebView(this);
+        String html = job.html == null || job.html.isEmpty() ? RtfUtils.rtfToHtmlDocument("") : job.html;
+        web.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null);
+        new AlertDialog.Builder(this)
+                .setTitle("Druck-/PDF-Vorschau: " + job.title)
+                .setView(web)
+                .setPositiveButton("Drucken/PDF", (d, which) -> startPrintJob(job))
+                .setNeutralButton("HTML teilen", (d, which) -> shareExportPayload(new LegacyExportShareModel.Payload(
+                        LegacyExportShareModel.Scope.CURRENT_NOTE, LegacyExportShareModel.Format.HTML, job.title,
+                        LegacyPrintLayout.safeFileName(job.title, ".html"), "text/html", html.getBytes(StandardCharsets.UTF_8),
+                        RtfUtils.rtfToPlainText(html), "Druck-HTML geteilt")))
+                .setNegativeButton("Schließen", null)
                 .show();
     }
 
@@ -4351,7 +4478,27 @@ public final class MainActivity extends Activity {
         if (currentNode.desktopNote != null && currentNode.desktopNote.argb != null) bg = 0xff000000 | (currentNode.desktopNote.argb & 0x00ffffff);
         else if (currentNode.bgArgb != 0) bg = 0xff000000 | (currentNode.bgArgb & 0x00ffffff);
         if (currentNode.fgArgb != 0) fg = 0xff000000 | (currentNode.fgArgb & 0x00ffffff);
-        NoteWidgetProvider.requestPinOrUpdate(this, title, text, bg, fg);
+        String path = nodeIndexPath(currentNode);
+        float textSp = settings == null ? 13f : LegacySettings.normalizeAndroidWidgetTextSp(settings.androidWidgetTextSp);
+        NoteWidgetProvider.requestPinOrUpdate(this, path, currentDisplayName, title, text, bg, fg, textSp);
+    }
+
+    private void updateAndroidWidgetsFromDocument() {
+        try {
+            if (settings == null) settings = AndroidSettingsStore.load(this);
+            NoteWidgetProvider.updateExistingWidgetsFromDocument(this, document, currentDisplayName, LegacySettings.normalizeAndroidWidgetTextSp(settings.androidWidgetTextSp));
+        } catch (Exception ignored) {
+            // Widgets must never interrupt normal ALX saving/editing.
+        }
+    }
+
+    private void showAndroidWidgetList() {
+        updateAndroidWidgetsFromDocument();
+        new AlertDialog.Builder(this)
+                .setTitle("Android-Haftnotiz-Widgets")
+                .setMessage(NoteWidgetProvider.widgetListSummary(this))
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     private void showDesktopNoteDialog() {
@@ -4385,6 +4532,7 @@ public final class MainActivity extends Activity {
                     currentNode.desktopNote = null;
                     markDocumentChanged();
                     updateTitle();
+                    updateAndroidWidgetsFromDocument();
                     status("Haftnotiz-Metadaten entfernt");
                 })
                 .setNegativeButton("Abbrechen", null)
@@ -4401,6 +4549,7 @@ public final class MainActivity extends Activity {
                     currentNode.desktopNote = state;
                     markDocumentChanged();
                     updateTitle();
+                    updateAndroidWidgetsFromDocument();
                     status("Haftnotiz-Metadaten gesetzt");
                 })
                 .show();
@@ -5070,6 +5219,84 @@ public final class MainActivity extends Activity {
         List<TreeListAdapter.FlatNode> rows = treeAdapter.getRows();
         for (int i = 0; i < rows.size(); i++) if (rows.get(i).node == node) return i;
         return -1;
+    }
+
+    private void showExportHubDialog() {
+        if (document == null) return;
+        saveCurrentEditorToNode();
+        String[] labels = LegacyExportShareModel.hubLabels();
+        new AlertDialog.Builder(this)
+                .setTitle("Export / Teilen / Drucken")
+                .setItems(labels, (d, which) -> {
+                    if (which == 6) { showPrintDialog(); return; }
+                    LegacyExportShareModel.Scope scope = LegacyExportShareModel.scopeForHubIndex(which);
+                    boolean share = LegacyExportShareModel.hubIndexShares(which);
+                    showExportFormatDialog(scope, share);
+                })
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void showExportFormatDialog(LegacyExportShareModel.Scope scope, boolean share) {
+        String title = (share ? "Teilen: " : "Speichern: ") + LegacyExportShareModel.scopeLabel(scope);
+        String[] labels = LegacyExportShareModel.formatLabels();
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(labels, (d, which) -> {
+                    LegacyExportShareModel.Payload payload = LegacyExportShareModel.build(document, currentNode, scope, LegacyExportShareModel.formatForIndex(which));
+                    if (share) shareExportPayload(payload);
+                    else saveGenericExportPayload(payload);
+                })
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
+    private void saveGenericExportPayload(LegacyExportShareModel.Payload payload) {
+        if (payload == null) return;
+        pendingGenericExportBytes = payload.bytes;
+        pendingGenericExportMime = payload.mimeType;
+        pendingGenericExportFileName = payload.fileName;
+        pendingGenericExportStatus = payload.status;
+        pendingGenericExportShareText = payload.textForShare;
+        String ext = payload.fileName != null && payload.fileName.toLowerCase(Locale.ROOT).endsWith(".rtf") ? ".rtf" :
+                (payload.fileName != null && payload.fileName.toLowerCase(Locale.ROOT).endsWith(".html") ? ".html" : ".txt");
+        LegacyFileDialogModel.Kind kind = ".rtf".equals(ext) ? LegacyFileDialogModel.Kind.EXPORT_RTF :
+                (".html".equals(ext) ? LegacyFileDialogModel.Kind.EXPORT_HTML : LegacyFileDialogModel.Kind.EXPORT_TXT_UTF8);
+        String filter = ".rtf".equals(ext) ? "rtf Files|*.rtf" : (".html".equals(ext) ? "html Files|*.html" : "txt Files|*.txt");
+        LegacyFileDialogModel.Spec spec = new LegacyFileDialogModel.Spec(kind, "Export speichern", filter, ext, payload.fileName,
+                currentDialogDirectory(), payload.mimeType, new String[]{payload.mimeType}, false, true);
+        startActivityForResult(intentForDialog(spec), REQ_EXPORT_GENERIC);
+    }
+
+    private void shareExportPayload(LegacyExportShareModel.Payload payload) {
+        if (payload == null) return;
+        try {
+            Uri uri = ExportFileProvider.writeExport(this, payload.fileName, payload.bytes);
+            Intent share = new Intent(Intent.ACTION_SEND);
+            share.setType(payload.mimeType);
+            share.putExtra(Intent.EXTRA_SUBJECT, payload.fileName);
+            if (payload.textForShare != null && !payload.textForShare.isEmpty()) share.putExtra(Intent.EXTRA_TEXT, payload.textForShare);
+            share.putExtra(Intent.EXTRA_STREAM, uri);
+            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(share, "Notizen exportieren/teilen"));
+            status("Teilen vorbereitet: " + payload.fileName);
+        } catch (Exception e) {
+            error("Teilen fehlgeschlagen", e.getMessage());
+        }
+    }
+
+    private void askShareAfterGenericExport() {
+        final byte[] bytes = pendingGenericExportBytes == null ? new byte[0] : pendingGenericExportBytes;
+        final String fileName = pendingGenericExportFileName == null ? "notizen-export.txt" : pendingGenericExportFileName;
+        final String mime = pendingGenericExportMime == null ? "text/plain" : pendingGenericExportMime;
+        final String shareText = pendingGenericExportShareText == null ? "" : pendingGenericExportShareText;
+        new AlertDialog.Builder(this)
+                .setTitle("Export gespeichert")
+                .setMessage((pendingGenericExportStatus == null ? "Export gespeichert" : pendingGenericExportStatus) + "\n\nJetzt über Android teilen?")
+                .setPositiveButton("Teilen", (d, which) -> shareExportPayload(new LegacyExportShareModel.Payload(
+                        LegacyExportShareModel.Scope.CURRENT_NOTE, LegacyExportShareModel.Format.TXT_UTF8, fileName, fileName, mime, bytes, shareText, "Export geteilt")))
+                .setNegativeButton("OK", null)
+                .show();
     }
 
     private void exportText() {
@@ -5935,6 +6162,12 @@ public final class MainActivity extends Activity {
                 writeAll(uri, (pendingExportRtf == null ? "" : pendingExportRtf).getBytes(java.nio.charset.Charset.forName("windows-1252")));
                 status("Knoten-RTF exportiert");
             } catch (Exception e) { error("Knoten-Export fehlgeschlagen", e.getMessage()); }
+        } else if (requestCode == REQ_EXPORT_GENERIC) {
+            try {
+                writeAll(uri, pendingGenericExportBytes == null ? new byte[0] : pendingGenericExportBytes);
+                status(pendingGenericExportStatus == null ? "Export gespeichert" : pendingGenericExportStatus);
+                askShareAfterGenericExport();
+            } catch (Exception e) { error("Export fehlgeschlagen", e.getMessage()); }
         } else if (requestCode == REQ_IMPORT_CONFIG) {
             try {
                 applyImportedSettings(readAll(uri));

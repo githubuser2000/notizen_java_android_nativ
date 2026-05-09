@@ -97,6 +97,7 @@ public final class LegacyToolbarPresentation {
         put(m, "Vorschau", "preview", "HTML-/RTF-Vorschau", "👁", "", "haupt");
         put(m, "RTF Info", "rtf_info", "RTF-Metriken anzeigen", "iR", "", "haupt");
         put(m, "Drucken", "print", "Drucken", "⎙", "Ctrl+P", "haupt");
+        put(m, "Export", "export_hub", "Exportieren, teilen oder PDF drucken", "⇪", "", "haupt");
         put(m, "HTML Import", "import_html", "HTML importieren", "H", "", "haupt");
         put(m, "TXT Import", "import_txt", "Text importieren", "T", "", "haupt");
         put(m, "RTF Import", "import_rtf", "RTF importieren", "R", "", "haupt");

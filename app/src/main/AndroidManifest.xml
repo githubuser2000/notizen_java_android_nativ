@@ -7,6 +7,11 @@
         android:icon="@drawable/notizen"
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
+        <provider
+            android:name=".ExportFileProvider"
+            android:authorities="de.notizen.android.exportfileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
         <receiver
             android:name=".AlarmReceiver"
             android:exported="false" />
