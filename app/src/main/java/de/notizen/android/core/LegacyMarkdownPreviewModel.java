@@ -31,13 +31,14 @@ public final class LegacyMarkdownPreviewModel {
     private static final Pattern INLINE_MARK = Pattern.compile("==[^=\\r\\n]+==");
     private static final Pattern INLINE_INS = Pattern.compile("\\+\\+[^+\\r\\n]+\\+\\+");
     private static final Pattern INLINE_MATH = Pattern.compile("(?s)(?<!\\$)\\$[^\\s$][^\\r\\n]*?[^\\s$]\\$(?!\\$)|\\$\\$.*?\\$\\$");
+    private static final Pattern DISPLAY_MATH = Pattern.compile("(?ms)^\\s*\\$\\$\\s*\\R.+?\\R\\s*\\$\\$\\s*$");
     private static final Pattern INLINE_LINK = Pattern.compile("!?\\[[^\\]\\r\\n]+\\]\\([^\\r\\n)]*\\)|!?\\[[^\\]\\r\\n]+\\]\\[[^\\]\\r\\n]*\\]");
-    private static final Pattern BARE_URL = Pattern.compile("(?i)\\b(?:https?://|www\\.)[^\\s<>()]+(?:\\([^\\s<>()]*\\)[^\\s<>()]*)*");
+    private static final Pattern BARE_URL = Pattern.compile("(?i)\\b(?:(?:https?|ftp)://|www\\.)[^\\s<>()]+(?:\\([^\\s<>()]*\\)[^\\s<>()]*)*");
     private static final Pattern BARE_EMAIL = Pattern.compile("(?i)(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}(?![A-Z0-9._%+-])");
     private static final Pattern REFERENCE_LINK = Pattern.compile("(?m)^\\s{0,3}\\[[^\\]\\r\\n]+\\]:\\s*\\S+.*$");
     private static final Pattern FOOTNOTE = Pattern.compile("(?m)^\\s{0,3}\\[\\^[^\\]\\r\\n]+\\]:\\s+.*$");
     private static final Pattern HR = Pattern.compile("(?m)^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$");
-    private static final Pattern FRONT_MATTER = Pattern.compile("(?s)^\\s*---\\R.+?\\R---\\R");
+    private static final Pattern FRONT_MATTER = Pattern.compile("(?s)^\\s*(?:---|\\+\\+\\+)\\R.+?\\R(?:---|\\.\\.\\.|\\+\\+\\+)\\R?");
     private static final Pattern HTML_BLOCK_HINT = Pattern.compile("(?im)^\\s{0,3}</?(?:address|article|aside|blockquote|details|div|dl|dt|dd|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|summary|table|thead|tbody|tfoot|tr|td|th|ul)\\b[^>]*>");
     private static final Pattern GFM_ALERT = Pattern.compile("(?im)^\\s{0,3}>\\s*\\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\\]\\s*$");
     private static final Pattern HTML_INLINE_HINT = Pattern.compile("(?i)</?(?:a|abbr|br|code|kbd|mark|span|sub|sup|u|ins|del|s|small|strong|em|b|i|img)\\b[^>]*>");
@@ -91,6 +92,7 @@ public final class LegacyMarkdownPreviewModel {
         if (INLINE_MARK.matcher(text).find()) score += 1;
         if (INLINE_INS.matcher(text).find()) score += 1;
         if (INLINE_MATH.matcher(text).find()) score += 1;
+        if (DISPLAY_MATH.matcher(text).find()) score += 2;
         if (INLINE_EMPHASIS.matcher(text).find()) score += 1;
         if (BARE_URL.matcher(text).find()) score += 1;
         if (BARE_EMAIL.matcher(text).find()) score += 1;
@@ -105,6 +107,7 @@ public final class LegacyMarkdownPreviewModel {
         return HEADING.matcher(text).find()
                 || SETEXT_HEADING.matcher(text).find()
                 || FENCED_CODE.matcher(text).find()
+                || DISPLAY_MATH.matcher(text).find()
                 || hasMarkdownTable(text);
     }
 
@@ -112,7 +115,7 @@ public final class LegacyMarkdownPreviewModel {
         String[] lines = cleanRawText(rawText).split("\n", -1);
         for (int i = 0; i + 1 < lines.length; i++) {
             List<String> header = splitTableRow(lines[i]);
-            if (header.size() > 1 && parseTableAlignments(lines[i + 1], header.size()) != null) return true;
+            if (header.size() >= 1 && hasUnescapedTablePipe(lines[i]) && parseTableAlignments(lines[i + 1], header.size()) != null) return true;
         }
         return false;
     }
@@ -124,10 +127,51 @@ public final class LegacyMarkdownPreviewModel {
         return "Markdown-Vorschau · " + lines + " Zeilen · " + chars + " Zeichen";
     }
 
+
+    private static PreprocessedMarkdown preprocessMarkdown(String rawText) {
+        String text = rawText == null ? "" : rawText.replace("\r\n", "\n").replace('\r', '\n');
+        FrontMatterBlock frontMatter = readFrontMatter(text);
+        if (frontMatter == null) return new PreprocessedMarkdown("", text);
+        String prefix = "<pre class=\"frontmatter\"><code>" + escapeHtml(frontMatter.content) + "</code></pre>";
+        return new PreprocessedMarkdown(prefix, frontMatter.body);
+    }
+
+    private static FrontMatterBlock readFrontMatter(String text) {
+        if (text == null || text.isEmpty()) return null;
+        String normalized = text.replace("\r\n", "\n").replace('\r', '\n');
+        String[] parts = normalized.split("\n", -1);
+        if (parts.length < 2) return null;
+        String opener = parts[0].trim();
+        boolean toml = opener.equals("+++");
+        if (!opener.equals("---") && !toml) return null;
+        int close = -1;
+        for (int i = 1; i < parts.length; i++) {
+            String t = parts[i].trim();
+            if (toml ? t.equals("+++") : (t.equals("---") || t.equals("..."))) {
+                close = i;
+                break;
+            }
+        }
+        if (close < 0) return null;
+        StringBuilder content = new StringBuilder();
+        for (int i = 1; i < close; i++) {
+            if (i > 1) content.append('\n');
+            content.append(parts[i]);
+        }
+        StringBuilder body = new StringBuilder();
+        for (int i = close + 1; i < parts.length; i++) {
+            if (i > close + 1) body.append('\n');
+            body.append(parts[i]);
+        }
+        return new FrontMatterBlock(content.toString(), body.toString());
+    }
+
     public static String toHtmlDocument(String rawText) {
         String clean = cleanRawText(rawText);
-        String fragment = commonmarkToHtmlFragmentIfAvailable(clean);
-        if (fragment == null) fragment = markdownToHtmlFragment(clean);
+        PreprocessedMarkdown preprocessed = preprocessMarkdown(clean);
+        String fragment = commonmarkToHtmlFragmentIfAvailable(preprocessed.body);
+        if (fragment == null) fragment = markdownToHtmlFragment(preprocessed.body, false);
+        fragment = preprocessed.prefixHtml + fragment;
         return "<!doctype html><html><head><meta charset=\"utf-8\">"
                 + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
                 + "<style>"
@@ -145,11 +189,22 @@ public final class LegacyMarkdownPreviewModel {
                 + ".task{font-family:monospace;margin-right:.35em;}.task.done{color:#166534;}.task-checkbox{margin-right:.35em;vertical-align:-.08em;}.md-image{max-width:100%;height:auto;border:1px solid #e5e7eb;border-radius:4px;}.md-image-alt{color:#6b7280;font-style:italic;}"
                 + ".md-alert,.markdown-alert{border-left-width:5px;}.md-alert-title,.markdown-alert-title{font-weight:700;margin-bottom:.25em;}.md-alert-note,.markdown-alert-note{border-left-color:#3b82f6;}.md-alert-tip,.markdown-alert-tip{border-left-color:#16a34a;}.md-alert-important,.markdown-alert-important{border-left-color:#7c3aed;}.md-alert-warning,.markdown-alert-warning{border-left-color:#d97706;}.md-alert-caution,.markdown-alert-caution{border-left-color:#dc2626;}.math{font-family:serif;background:#f8fafc;border:1px solid #e5e7eb;border-radius:4px;padding:.04em .22em;}div.math{display:block;margin:.55em 0;padding:.45em .6em;overflow:auto;}"
                 + ".footnotes{border-top:1px solid #d8e0ea;margin-top:1em;padding-top:.4em;font-size:.92em;color:#374151;}.footnote-backref{margin-left:.35em;text-decoration:none;}"
+                + ".frontmatter{font-size:.9em;color:#4b5563;border-style:dashed;}"
                 + "</style></head><body>" + fragment + "</body></html>";
     }
 
     public static String markdownToHtmlFragment(String rawText) {
-        MarkdownRenderer renderer = new MarkdownRenderer(cleanRawText(rawText));
+        return markdownToHtmlFragment(rawText, true);
+    }
+
+    private static String markdownToHtmlFragment(String rawText, boolean preprocess) {
+        String clean = cleanRawText(rawText);
+        if (preprocess) {
+            PreprocessedMarkdown preprocessed = preprocessMarkdown(clean);
+            MarkdownRenderer renderer = new MarkdownRenderer(preprocessed.body);
+            return preprocessed.prefixHtml + renderer.render();
+        }
+        MarkdownRenderer renderer = new MarkdownRenderer(clean);
         return renderer.render();
     }
 
@@ -257,6 +312,14 @@ public final class LegacyMarkdownPreviewModel {
                 break;
             }
             out.append(html, i, lt);
+            if (html.startsWith("<!--", lt)) {
+                int commentEnd = html.indexOf("-->", lt + 4);
+                if (commentEnd >= 0) {
+                    out.append(html, lt, commentEnd + 3);
+                    i = commentEnd + 3;
+                    continue;
+                }
+            }
             int gt = findHtmlTagEnd(html, lt + 1);
             if (gt < 0) {
                 out.append("&lt;");
@@ -503,6 +566,15 @@ public final class LegacyMarkdownPreviewModel {
         return true;
     }
 
+
+    private static boolean isMathBlockStart(String line) {
+        return line != null && line.trim().equals("$$");
+    }
+
+    private static boolean isMathBlockClose(String line) {
+        return isMathBlockStart(line);
+    }
+
     private static boolean isHr(String line) {
         return line != null && HR.matcher(line).matches();
     }
@@ -546,7 +618,7 @@ public final class LegacyMarkdownPreviewModel {
         if (index < 0 || index >= lines.size()) return false;
         String line = lines.get(index);
         if (isBlank(line)) return true;
-        if (headingLineContent(line) != null || isFenceStart(line) || isHr(line) || isListLine(line)) return true;
+        if (headingLineContent(line) != null || isFenceStart(line) || isMathBlockStart(line) || isHr(line) || isListLine(line)) return true;
         if (isBlockQuoteLine(line) || isHtmlBlockLine(line)) return true;
         if (index + 1 < lines.size() && isTableStart(lines, index)) return true;
         if (index + 1 < lines.size() && isSetextUnderline(lines.get(index + 1))) return true;
@@ -578,7 +650,7 @@ public final class LegacyMarkdownPreviewModel {
     private static boolean isTableStart(List<String> lines, int i) {
         if (lines == null || i < 0 || i + 1 >= lines.size()) return false;
         List<String> header = splitTableRow(lines.get(i));
-        return header.size() > 1 && parseTableAlignments(lines.get(i + 1), header.size()) != null;
+        return header.size() >= 1 && hasUnescapedTablePipe(lines.get(i)) && parseTableAlignments(lines.get(i + 1), header.size()) != null;
     }
 
     private static List<String> splitTableRow(String line) {
@@ -630,9 +702,39 @@ public final class LegacyMarkdownPreviewModel {
         return cells;
     }
 
+
+    private static boolean hasUnescapedTablePipe(String line) {
+        if (line == null) return false;
+        String s = line.trim();
+        boolean escape = false;
+        int activeCodeLen = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (c == '\\') {
+                escape = true;
+                continue;
+            }
+            if (c == '`') {
+                int j = i;
+                while (j < s.length() && s.charAt(j) == '`') j++;
+                int run = j - i;
+                if (activeCodeLen == 0) activeCodeLen = run;
+                else if (run == activeCodeLen) activeCodeLen = 0;
+                i = j - 1;
+                continue;
+            }
+            if (c == '|' && activeCodeLen == 0) return true;
+        }
+        return false;
+    }
+
     private static List<String> parseTableAlignments(String separatorLine, int minColumns) {
         List<String> cells = splitTableRow(separatorLine);
-        if (cells.size() < 2 || cells.size() < minColumns) return null;
+        if (cells.size() < 1 || cells.size() < minColumns) return null;
         ArrayList<String> align = new ArrayList<>();
         for (String c : cells) {
             String s = c == null ? "" : c.trim();
@@ -684,7 +786,8 @@ public final class LegacyMarkdownPreviewModel {
     private static boolean safeUrl(String url) {
         if (url == null) return false;
         String u = url.trim();
-        if (u.isEmpty()) return false;
+        if (u.isEmpty()) return true;
+        if (containsUnsafeUrlChars(u)) return false;
         String lower = u.toLowerCase(Locale.ROOT);
         if (lower.startsWith("javascript:") || lower.startsWith("vbscript:") || lower.startsWith("data:")) return false;
         if (lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("mailto:") || lower.startsWith("tel:") || lower.startsWith("ftp:") || lower.startsWith("#")) return true;
@@ -695,12 +798,22 @@ public final class LegacyMarkdownPreviewModel {
         if (url == null) return false;
         String u = url.trim();
         if (u.isEmpty()) return false;
+        if (containsUnsafeUrlChars(u)) return false;
         String lower = u.toLowerCase(Locale.ROOT);
         if (lower.startsWith("http://") || lower.startsWith("https://")) return true;
         if (lower.startsWith("data:image/")) {
-            return lower.matches("data:image/(png|jpe?g|gif|webp);base64,[a-z0-9+/=\\s]+$");
+            return lower.matches("data:image/(png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$");
         }
         return !hasExplicitScheme(u);
+    }
+
+    private static boolean containsUnsafeUrlChars(String url) {
+        if (url == null) return true;
+        for (int i = 0; i < url.length(); i++) {
+            char c = url.charAt(i);
+            if (c <= 0x20 || c == 0x7f) return true;
+        }
+        return false;
     }
 
     private static boolean hasExplicitScheme(String url) {
@@ -938,6 +1051,11 @@ public final class LegacyMarkdownPreviewModel {
                     continue;
                 }
 
+                if (isMathBlockStart(line)) {
+                    i = renderDisplayMath(out, src, i, end);
+                    continue;
+                }
+
                 String heading = headingLineContent(line);
                 if (heading != null) {
                     int nl = heading.indexOf('\n');
@@ -1036,6 +1154,23 @@ public final class LegacyMarkdownPreviewModel {
             return j;
         }
 
+
+        private int renderDisplayMath(StringBuilder out, List<String> src, int i, int end) {
+            StringBuilder math = new StringBuilder();
+            int j = i + 1;
+            while (j < end) {
+                String line = src.get(j);
+                if (isMathBlockClose(line)) {
+                    out.append("<div class=\"math\">").append(escapeHtml(math.toString().trim())).append("</div>");
+                    return j + 1;
+                }
+                if (math.length() > 0) math.append('\n');
+                math.append(line);
+                j++;
+            }
+            return renderParagraph(out, src, i, end);
+        }
+
         private int renderIndentedCode(StringBuilder out, List<String> src, int i, int end) {
             StringBuilder code = new StringBuilder();
             int j = i;
@@ -1063,7 +1198,7 @@ public final class LegacyMarkdownPreviewModel {
             }
             out.append("</tr></thead><tbody>");
             int j = i + 2;
-            while (j < end && !isBlank(src.get(j)) && splitTableRow(src.get(j)).size() > 1) {
+            while (j < end && !isBlank(src.get(j)) && hasUnescapedTablePipe(src.get(j))) {
                 if (parseTableAlignments(src.get(j), cols) != null) break;
                 List<String> row = splitTableRow(src.get(j));
                 out.append("<tr>");
@@ -1317,8 +1452,9 @@ public final class LegacyMarkdownPreviewModel {
                 if (startsWith(text, i, "![")) {
                     LinkToken token = parseLinkToken(text, i, true);
                     if (token != null) {
-                        out.append(renderImageToken(token));
-                        i = token.endIndex;
+                        ImageAttrs attrs = parseImageAttributes(text, token.endIndex);
+                        out.append(renderImageToken(token, attrs));
+                        i = attrs == null ? token.endIndex : attrs.endIndex;
                         continue;
                     }
                 }
@@ -1350,7 +1486,7 @@ public final class LegacyMarkdownPreviewModel {
                     int close = text.indexOf('>', i + 1);
                     if (close > i) {
                         String inside = text.substring(i + 1, close).trim();
-                        if (inside.matches("(?i)https?://[^\\s<>]+") || inside.matches("(?i)mailto:[^\\s<>]+")) {
+                        if (inside.matches("(?i)(?:https?|ftp)://[^\\s<>]+") || inside.matches("(?i)mailto:[^\\s<>]+")) {
                             out.append("<a href=\"").append(escapeAttr(inside)).append("\">").append(escapeHtml(inside)).append("</a>");
                             i = close + 1;
                             continue;
@@ -1539,7 +1675,7 @@ public final class LegacyMarkdownPreviewModel {
                 int end = findClosingParen(text, after + 1);
                 if (end > after) {
                     LinkParts parts = parseLinkParts(text.substring(after + 1, end));
-                    if (!parts.url.isEmpty()) return new LinkToken(label, parts.url, parts.title, end + 1);
+                    return new LinkToken(label, parts.url, parts.title, end + 1);
                 }
             }
             if (after < text.length() && text.charAt(after) == '[') {
@@ -1576,17 +1712,117 @@ public final class LegacyMarkdownPreviewModel {
             return -1;
         }
 
-        private String renderImageToken(LinkToken token) {
+        private String renderImageToken(LinkToken token, ImageAttrs attrs) {
             String altPlain = token.label.replaceAll("[\\[\\]`*_~#]", "").trim();
             if (safeImageUrl(token.url)) {
                 StringBuilder img = new StringBuilder();
-                img.append("<img class=\"md-image\" src=\"").append(escapeAttr(token.url)).append("\" alt=\"").append(escapeAttr(altPlain)).append("\"");
-                if (!token.title.isEmpty()) img.append(" title=\"").append(escapeAttr(token.title)).append("\"");
+                img.append("<img class=\"md-image");
+                if (attrs != null && !attrs.classes.isEmpty()) img.append(' ').append(escapeAttr(attrs.classes));
+                img.append("\" src=\"").append(escapeAttr(token.url)).append("\" alt=\"").append(escapeAttr(altPlain)).append("\"");
+                if (attrs != null && !attrs.id.isEmpty()) img.append(" id=\"").append(escapeAttr(attrs.id)).append("\"");
+                String title = attrs != null && !attrs.title.isEmpty() ? attrs.title : token.title;
+                if (!title.isEmpty()) img.append(" title=\"").append(escapeAttr(title)).append("\"");
+                if (attrs != null && !attrs.width.isEmpty()) img.append(" width=\"").append(escapeAttr(attrs.width)).append("\"");
+                if (attrs != null && !attrs.height.isEmpty()) img.append(" height=\"").append(escapeAttr(attrs.height)).append("\"");
                 img.append(">");
                 return img.toString();
             }
             if (altPlain.isEmpty()) return "<span class=\"md-image-alt\">[Bild]</span>";
             return "<span class=\"md-image-alt\">[Bild: " + renderInline(token.label) + "]</span>";
+        }
+
+        private ImageAttrs parseImageAttributes(String text, int start) {
+            if (text == null || start < 0 || start >= text.length() || text.charAt(start) != '{') return null;
+            int close = text.indexOf('}', start + 1);
+            if (close < 0) return null;
+            String raw = text.substring(start + 1, close).trim();
+            if (raw.isEmpty()) return null;
+            ImageAttrs attrs = new ImageAttrs(close + 1);
+            ArrayList<String> classes = new ArrayList<>();
+            for (String token : splitAttributeTokens(raw)) {
+                if (token.isEmpty()) continue;
+                if (token.startsWith("#")) {
+                    String id = token.substring(1);
+                    if (id.matches("[A-Za-z0-9][A-Za-z0-9_.:-]{0,96}")) attrs.id = id;
+                    continue;
+                }
+                if (token.startsWith(".")) {
+                    String cls = token.substring(1);
+                    if (cls.matches("[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")) classes.add(cls);
+                    continue;
+                }
+                int eq = token.indexOf('=');
+                if (eq <= 0) continue;
+                String key = token.substring(0, eq).trim().toLowerCase(Locale.ROOT);
+                String value = stripAttributeQuotes(token.substring(eq + 1).trim());
+                if ((key.equals("width") || key.equals("height")) && value.matches("[0-9]{1,5}|[0-9]{1,3}%")) {
+                    if (key.equals("width")) attrs.width = value;
+                    else attrs.height = value;
+                } else if (key.equals("title") && value.length() <= 512) {
+                    attrs.title = decodeBasicHtmlEntities(value);
+                }
+            }
+            if (!classes.isEmpty()) {
+                StringBuilder cls = new StringBuilder();
+                for (String c : classes) {
+                    if (cls.length() > 0) cls.append(' ');
+                    cls.append(c);
+                }
+                attrs.classes = cls.toString();
+            }
+            return attrs.hasAny() ? attrs : null;
+        }
+
+        private ArrayList<String> splitAttributeTokens(String raw) {
+            ArrayList<String> tokens = new ArrayList<>();
+            if (raw == null || raw.isEmpty()) return tokens;
+            StringBuilder cur = new StringBuilder();
+            char quote = 0;
+            boolean escape = false;
+            for (int i = 0; i < raw.length(); i++) {
+                char c = raw.charAt(i);
+                if (escape) {
+                    cur.append(c);
+                    escape = false;
+                    continue;
+                }
+                if (c == '\\') {
+                    escape = true;
+                    cur.append(c);
+                    continue;
+                }
+                if (quote != 0) {
+                    cur.append(c);
+                    if (c == quote) quote = 0;
+                    continue;
+                }
+                if (c == '\'' || c == '"') {
+                    quote = c;
+                    cur.append(c);
+                    continue;
+                }
+                if (Character.isWhitespace(c)) {
+                    if (cur.length() > 0) {
+                        tokens.add(cur.toString());
+                        cur.setLength(0);
+                    }
+                } else {
+                    cur.append(c);
+                }
+            }
+            if (cur.length() > 0) tokens.add(cur.toString());
+            return tokens;
+        }
+
+        private String stripAttributeQuotes(String value) {
+            if (value == null) return "";
+            String v = value.trim();
+            if (v.length() >= 2) {
+                char first = v.charAt(0);
+                char last = v.charAt(v.length() - 1);
+                if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) return v.substring(1, v.length() - 1);
+            }
+            return v;
         }
 
         private String sanitizeInlineHtmlTag(String inside) {
@@ -1657,10 +1893,36 @@ public final class LegacyMarkdownPreviewModel {
                     CodeSpan span = parseCodeSpan(text, i);
                     if (span != null) { i = span.end; continue; }
                 }
+                if (isRepeatedDelimiterToken(token) && c == token.charAt(0)) {
+                    int run = delimiterRunLength(text, i, c);
+                    if (run >= token.length()) {
+                        if (token.length() == 1 && run > 1 && run % 2 == 0) {
+                            i += run;
+                            continue;
+                        }
+                        int candidate = run > token.length() ? i + run - token.length() : i;
+                        if (canCloseDelimiter(text, candidate, token)) return candidate;
+                        i += Math.max(1, run);
+                        continue;
+                    }
+                }
                 if (text.startsWith(token, i) && canCloseDelimiter(text, i, token)) return i;
                 i++;
             }
             return -1;
+        }
+
+        private int delimiterRunLength(String text, int start, char ch) {
+            int i = start;
+            while (i < text.length() && text.charAt(i) == ch) i++;
+            return i - start;
+        }
+
+        private boolean isRepeatedDelimiterToken(String token) {
+            if (token == null || token.isEmpty()) return false;
+            char ch = token.charAt(0);
+            for (int i = 1; i < token.length(); i++) if (token.charAt(i) != ch) return false;
+            return ch == '*' || ch == '_' || ch == '~' || ch == '=' || ch == '+' || ch == '^';
         }
 
         private boolean canOpenDelimiter(String text, int start, String token) {
@@ -1705,4 +1967,28 @@ public final class LegacyMarkdownPreviewModel {
             this.endIndex = endIndex;
         }
     }
+
+    private static final class ImageAttrs {
+        String id = "";
+        String classes = "";
+        String title = "";
+        String width = "";
+        String height = "";
+        final int endIndex;
+        ImageAttrs(int endIndex) { this.endIndex = endIndex; }
+        boolean hasAny() { return !id.isEmpty() || !classes.isEmpty() || !title.isEmpty() || !width.isEmpty() || !height.isEmpty(); }
+    }
+
+    private static final class PreprocessedMarkdown {
+        final String prefixHtml;
+        final String body;
+        PreprocessedMarkdown(String prefixHtml, String body) { this.prefixHtml = prefixHtml == null ? "" : prefixHtml; this.body = body == null ? "" : body; }
+    }
+
+    private static final class FrontMatterBlock {
+        final String content;
+        final String body;
+        FrontMatterBlock(String content, String body) { this.content = content == null ? "" : content; this.body = body == null ? "" : body; }
+    }
+
 }

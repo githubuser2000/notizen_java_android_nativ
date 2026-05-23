@@ -94,6 +94,26 @@ join_by_colon() {
   printf '%s' "$joined"
 }
 
+prepare_manifest_for_aapt2() {
+  local source_manifest="$1"
+  local target_manifest="$2"
+  if grep -Eq '<manifest[^>]*[[:space:]]package[[:space:]]*=' "$source_manifest"; then
+    cp "$source_manifest" "$target_manifest"
+    return
+  fi
+  awk -v pkg="$PACKAGE" '
+    !done && /<manifest([[:space:]>])/ {
+      sub(/<manifest/, "<manifest package=\"" pkg "\"")
+      done=1
+    }
+    { print }
+  ' "$source_manifest" > "$target_manifest"
+  if ! grep -Eq '<manifest[^>]*[[:space:]]package[[:space:]]*=' "$target_manifest"; then
+    echo "Konnte kein package-Attribut in das Manifest für aapt2 einfügen: $target_manifest" >&2
+    exit 1
+  fi
+}
+
 need_file "$ANDROID_JAR"
 need_exec "$AAPT2" "aapt2"
 need_exec "$D8" "d8"
@@ -108,6 +128,7 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"/res "$BUILD_DIR"/gen "$BUILD_DIR"/classes "$BUILD_DIR"/dex "$BUILD_DIR"/out
 
 MANIFEST="$APP_DIR/AndroidManifest.xml"
+AAPT2_MANIFEST="$BUILD_DIR/AndroidManifest.aapt2.xml"
 RES_DIR="$APP_DIR/res"
 JAVA_SRC="$APP_DIR/java"
 RES_ZIP="$BUILD_DIR/res/resources.zip"
@@ -133,10 +154,13 @@ printf '\n'
 printf '==> Ressourcen mit aapt2 kompilieren\n'
 "$AAPT2" compile --dir "$RES_DIR" -o "$RES_ZIP"
 
+prepare_manifest_for_aapt2 "$MANIFEST" "$AAPT2_MANIFEST"
+
 printf '\n==> APK-Basis mit aapt2 linken\n'
 "$AAPT2" link \
   -I "$ANDROID_JAR" \
-  --manifest "$MANIFEST" \
+  --manifest "$AAPT2_MANIFEST" \
+  --custom-package "$PACKAGE" \
   --java "$BUILD_DIR/gen" \
   --min-sdk-version "$MIN_SDK" \
   --target-sdk-version "$TARGET_SDK" \

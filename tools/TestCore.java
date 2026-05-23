@@ -2318,7 +2318,9 @@ public final class TestCore {
                     || !text.contains("setEditorMarkdownReadOnly")
                     || !text.contains("markdownPreviewActive && markdownPreviewNode == currentNode")
                     || !text.contains("Never serialize that preview back to RTF")
-                    || !text.contains("LegacyMarkdownPreviewModel.rawMarkdownTextFromRtf")) {
+                    || !text.contains("LegacyMarkdownPreviewModel.rawMarkdownTextFromRtf")
+                    || !text.contains("raw.trim().isEmpty()")
+                    || text.contains("Kein Markdown im RTF-Rohtext erkannt")) {
                 throw new AssertionError("v110 Android markdown preview bridge missing");
             }
         }
@@ -2456,11 +2458,58 @@ public final class TestCore {
             throw new AssertionError("markdown extended table escaped/code pipe handling failed: " + tableHtml);
         }
 
+        String oneColumnTable = "| Name |\n| --- |\n| Wert |";
+        String oneColumnTableHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(oneColumnTable);
+        if (!oneColumnTableHtml.contains("<table>") || !oneColumnTableHtml.contains("<td style=\"text-align:left\">Wert</td>")) {
+            throw new AssertionError("markdown extended one-column table failed: " + oneColumnTableHtml);
+        }
+
+        String nestedEmphasis = "**strong *em*** und *em **strong***";
+        String nestedEmphasisHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(nestedEmphasis);
+        if (!nestedEmphasisHtml.contains("<strong>strong <em>em</em></strong>")
+                || !nestedEmphasisHtml.contains("<em>em <strong>strong</strong></em>")) {
+            throw new AssertionError("markdown extended nested emphasis failed: " + nestedEmphasisHtml);
+        }
+
+        String emptyLink = "[]() und [leer]()";
+        String emptyLinkHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(emptyLink);
+        if (!emptyLinkHtml.contains("<a href=\"\"></a>") || !emptyLinkHtml.contains("<a href=\"\">leer</a>")) {
+            throw new AssertionError("markdown extended empty link destination failed: " + emptyLinkHtml);
+        }
+
+        String frontMatter = "---\ntitle: Test\n---\n# Hallo";
+        String frontMatterHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(frontMatter);
+        if (!frontMatterHtml.contains("class=\"frontmatter\"") || !frontMatterHtml.contains("title: Test") || !frontMatterHtml.contains("<h1>Hallo</h1>")) {
+            throw new AssertionError("markdown extended front matter failed: " + frontMatterHtml);
+        }
+
+        String tomlFrontMatter = "+++\ntitle = 'Test'\n+++\nText";
+        String tomlFrontMatterHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(tomlFrontMatter);
+        if (!tomlFrontMatterHtml.contains("class=\"frontmatter\"") || !tomlFrontMatterHtml.contains("title = &#39;Test&#39;") || !tomlFrontMatterHtml.contains("<p>Text</p>")) {
+            throw new AssertionError("markdown extended TOML front matter failed: " + tomlFrontMatterHtml);
+        }
+
+        String displayMath = "$$\na^2 + b^2 = c^2\n$$";
+        String displayMathHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(displayMath);
+        if (!displayMathHtml.contains("<div class=\"math\">a^2 + b^2 = c^2</div>")) {
+            throw new AssertionError("markdown extended display math block failed: " + displayMathHtml);
+        }
+
         String image = "Bild: ![Alt **fett**](https://example.org/a.png \"Titel\") und [bad](javascript:alert(1))";
         String imageHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(image);
         if (!imageHtml.contains("<img class=\"md-image\" src=\"https://example.org/a.png\" alt=\"Alt fett\" title=\"Titel\">")
                 || imageHtml.contains("href=\"javascript:")) {
             throw new AssertionError("markdown extended image/safe link handling failed: " + imageHtml);
+        }
+
+        String imageAttrs = "![Alt](pic.png){#hero .wide width=320 height=50 title=\"Attr Titel\"}";
+        String imageAttrsHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(imageAttrs);
+        if (!imageAttrsHtml.contains("class=\"md-image wide\"")
+                || !imageAttrsHtml.contains("id=\"hero\"")
+                || !imageAttrsHtml.contains("width=\"320\"")
+                || !imageAttrsHtml.contains("height=\"50\"")
+                || !imageAttrsHtml.contains("title=\"Attr Titel\"")) {
+            throw new AssertionError("markdown extended image attributes failed: " + imageAttrsHtml);
         }
 
         String foot = "Fußnote[^eins]\n\n[^eins]: erste Zeile\n    zweite **Zeile**";
@@ -2519,6 +2568,11 @@ public final class TestCore {
                 || !htmlBlockOut.contains("<table><tr><td>A</td></tr></table>")
                 || htmlBlockOut.contains("onclick")) {
             throw new AssertionError("markdown extended safe HTML block sanitizing failed: " + htmlBlockOut);
+        }
+
+        String htmlCommentOut = LegacyMarkdownPreviewModel.markdownToHtmlFragment("<!-- ok -->\n\nText");
+        if (!htmlCommentOut.contains("<!-- ok -->") || htmlCommentOut.contains("&lt;!--")) {
+            throw new AssertionError("markdown extended HTML comment handling failed: " + htmlCommentOut);
         }
 
         String htmlInline = "<span class=\"safe\" onclick=\"bad\">S</span> <a href=\"javascript:bad\">bad</a> <a href=\"https://example.org\" title=\"T\">ok</a>";

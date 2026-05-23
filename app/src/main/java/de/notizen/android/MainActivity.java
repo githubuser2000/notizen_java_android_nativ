@@ -2257,8 +2257,8 @@ public final class MainActivity extends Activity {
         saveCurrentEditorToNode();
         String sourceRtf = currentNode.rtf == null ? "" : currentNode.rtf;
         String raw = LegacyMarkdownPreviewModel.rawMarkdownTextFromRtf(sourceRtf);
-        if (!LegacyMarkdownPreviewModel.looksLikeMarkdown(raw)) {
-            if (showStatus) status("Kein Markdown im RTF-Rohtext erkannt");
+        if (raw.trim().isEmpty()) {
+            if (showStatus) status("Keine Markdown-Vorschau: aktueller Knoten ist leer");
             return false;
         }
 
