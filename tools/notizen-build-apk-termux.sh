@@ -20,6 +20,7 @@ D8="${D8:-$ANDROID_HOME/cmdline-tools/latest/bin/d8}"
 APKSIGNER="${APKSIGNER:-$(command -v apksigner || true)}"
 ZIPALIGN="${ZIPALIGN:-$(command -v zipalign || true)}"
 JAVAC="${JAVAC:-javac}"
+JAVAC_RELEASE="${JAVAC_RELEASE:-17}"
 ZIP="${ZIP:-zip}"
 CURL="${CURL:-$(command -v curl || true)}"
 WGET="${WGET:-$(command -v wget || true)}"
@@ -41,6 +42,7 @@ COMMONMARK_ARTIFACTS=(
   commonmark-ext-yaml-front-matter
 )
 COMMONMARK_JARS=()
+JAVAC_LANG_ARGS=()
 KEYSTORE="${KEYSTORE:-$HOME/.android/debug.keystore}"
 KEY_ALIAS="${KEY_ALIAS:-androiddebugkey}"
 STOREPASS="${STOREPASS:-android}"
@@ -114,6 +116,15 @@ prepare_manifest_for_aapt2() {
   fi
 }
 
+build_javac_language_args() {
+  JAVAC_LANG_ARGS=()
+  if "$JAVAC" --help 2>&1 | grep -q -- '--release'; then
+    JAVAC_LANG_ARGS=(--release "$JAVAC_RELEASE")
+  else
+    JAVAC_LANG_ARGS=(-Xlint:-options -source "$JAVAC_RELEASE" -target "$JAVAC_RELEASE")
+  fi
+}
+
 need_file "$ANDROID_JAR"
 need_exec "$AAPT2" "aapt2"
 need_exec "$D8" "d8"
@@ -122,6 +133,7 @@ need_exec "$ZIPALIGN" "zipalign"
 need_cmd "$JAVAC"
 need_cmd "$ZIP"
 need_cmd keytool
+build_javac_language_args
 ensure_commonmark_deps
 
 rm -rf "$BUILD_DIR"
@@ -142,6 +154,7 @@ printf 'compile/android.jar API: %s\n' "$COMPILE_API"
 printf 'targetSdk: %s\n' "$TARGET_SDK"
 printf 'minSdk: %s\n' "$MIN_SDK"
 printf 'package: %s\n' "$PACKAGE"
+printf 'javac language mode: %s\n' "${JAVAC_LANG_ARGS[*]}"
 printf 'aapt2: %s\n' "$AAPT2"
 printf 'd8: %s\n' "$D8"
 printf 'apksigner: %s\n' "$APKSIGNER"
@@ -175,7 +188,7 @@ find "$JAVA_SRC" "$BUILD_DIR/gen" -name '*.java' -print > "$BUILD_DIR/sources.tx
 COMMONMARK_CP="$(join_by_colon "${COMMONMARK_JARS[@]}")"
 JAVAC_CP="$ANDROID_JAR:$BUILD_DIR/gen"
 if [ -n "$COMMONMARK_CP" ]; then JAVAC_CP="$JAVAC_CP:$COMMONMARK_CP"; fi
-"$JAVAC" -source 17 -target 17 \
+"$JAVAC" "${JAVAC_LANG_ARGS[@]}" \
   -classpath "$JAVAC_CP" \
   -sourcepath "$JAVA_SRC:$BUILD_DIR/gen" \
   -d "$BUILD_DIR/classes" \
