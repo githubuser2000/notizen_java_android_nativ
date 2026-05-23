@@ -74,6 +74,7 @@ public final class TestCore {
         testAndroidV110MarkdownPreview();
         testAndroidV111TreeUndoAndPressureInk();
         testAndroidV112FullMarkdownAndCursorRestore();
+        testAndroidMarkdownExtendedCoverage();
         testAndroidV116CrashHardening();
         System.out.println("Core tests OK");
         System.exit(0);
@@ -2418,6 +2419,56 @@ public final class TestCore {
                 throw new AssertionError("v114 Android markdown cursor/selection or delayed menu bridge missing");
             }
             if (text.contains("setTextIsSelectable")) throw new AssertionError("v114 should not leave markdown preview via Android selectable EditText mode");
+        }
+    }
+
+
+    private static void testAndroidMarkdownExtendedCoverage() {
+        if (!LegacyMarkdownPreviewModel.looksLikeMarkdown("*kursiv*")) {
+            throw new AssertionError("markdown extended single emphasis should activate markdown preview");
+        }
+        String snake = LegacyMarkdownPreviewModel.markdownToHtmlFragment("snake_case_datei");
+        if (snake.contains("<em>")) throw new AssertionError("markdown extended underscores inside words must not become emphasis: " + snake);
+
+        String nested = "- Vater\n  - **Kind**\n  - [x] fertig";
+        String nestedHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(nested);
+        if (!nestedHtml.contains("<ul><li>Vater<ul>")
+                || !nestedHtml.contains("<strong>Kind</strong>")
+                || !nestedHtml.contains("task done")
+                || !nestedHtml.contains("fertig")) {
+            throw new AssertionError("markdown extended nested/task list rendering failed: " + nestedHtml);
+        }
+
+        String inline = "Text  \nUmbruch und https://example.org/pfad_(x). `eins` ``zwei ` drei`` ==mark== <kbd>Ctrl</kbd> <script>x</script>";
+        String inlineHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(inline);
+        if (!inlineHtml.contains("Text<br>Umbruch")
+                || !inlineHtml.contains("href=\"https://example.org/pfad_(x)\"")
+                || !inlineHtml.contains("<code>zwei ` drei</code>")
+                || !inlineHtml.contains("<mark>mark</mark>")
+                || !inlineHtml.contains("<kbd>Ctrl</kbd>")
+                || !inlineHtml.contains("&lt;script&gt;x&lt;/script&gt;")) {
+            throw new AssertionError("markdown extended inline markdown coverage failed: " + inlineHtml);
+        }
+
+        String table = "| A | B |\n|---|---|\n| `a|b` | c \\| d |";
+        String tableHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(table);
+        if (!tableHtml.contains("<code>a|b</code>") || !tableHtml.contains("c | d")) {
+            throw new AssertionError("markdown extended table escaped/code pipe handling failed: " + tableHtml);
+        }
+
+        String image = "Bild: ![Alt **fett**](https://example.org/a.png \"Titel\") und [bad](javascript:alert(1))";
+        String imageHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(image);
+        if (!imageHtml.contains("<img class=\"md-image\" src=\"https://example.org/a.png\" alt=\"Alt fett\" title=\"Titel\">")
+                || imageHtml.contains("href=\"javascript:")) {
+            throw new AssertionError("markdown extended image/safe link handling failed: " + imageHtml);
+        }
+
+        String foot = "Fußnote[^eins]\n\n[^eins]: erste Zeile\n    zweite **Zeile**";
+        String footHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(foot);
+        if (!footHtml.contains("id=\"fn-eins\"")
+                || !footHtml.contains("zweite <strong>Zeile</strong>")
+                || !footHtml.contains("footnote-backref")) {
+            throw new AssertionError("markdown extended multiline footnote rendering failed: " + footHtml);
         }
     }
 
