@@ -5,6 +5,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -19,7 +21,7 @@ public final class LegacyMarkdownPreviewModel {
     private static final Pattern SETEXT_HEADING = Pattern.compile("(?m)^\\S.*\\R\\s*(=+|-+)\\s*$");
     private static final Pattern FENCED_CODE = Pattern.compile("(?m)^\\s{0,3}(`{3,}|~{3,}).*$");
     private static final Pattern UNORDERED_LIST = Pattern.compile("(?m)^\\s{0,24}[-+*]\\s+\\S.*$");
-    private static final Pattern TASK_LIST = Pattern.compile("(?m)^\\s{0,24}[-+*]\\s+\\[[ xX]\\]\\s+\\S.*$");
+    private static final Pattern TASK_LIST = Pattern.compile("(?m)^\\s{0,24}(?:[-+*]|\\d{1,9}[.)])\\s+\\[[ xX]\\](?:\\s+.*)?$");
     private static final Pattern ORDERED_LIST = Pattern.compile("(?m)^\\s{0,24}\\d{1,9}[.)]\\s+\\S.*$");
     private static final Pattern BLOCKQUOTE = Pattern.compile("(?m)^\\s{0,3}>\\s*\\S.*$");
     private static final Pattern INLINE_STRONG = Pattern.compile("(?s)(\\*\\*|__)[^\\r\\n].*?\\1");
@@ -27,14 +29,20 @@ public final class LegacyMarkdownPreviewModel {
     private static final Pattern INLINE_CODE = Pattern.compile("`+[^`\\r\\n]+`+");
     private static final Pattern INLINE_STRIKE = Pattern.compile("~~[^~\\r\\n]+~~");
     private static final Pattern INLINE_MARK = Pattern.compile("==[^=\\r\\n]+==");
+    private static final Pattern INLINE_INS = Pattern.compile("\\+\\+[^+\\r\\n]+\\+\\+");
+    private static final Pattern INLINE_MATH = Pattern.compile("(?s)(?<!\\$)\\$[^\\s$][^\\r\\n]*?[^\\s$]\\$(?!\\$)|\\$\\$.*?\\$\\$");
     private static final Pattern INLINE_LINK = Pattern.compile("!?\\[[^\\]\\r\\n]+\\]\\([^\\r\\n)]*\\)|!?\\[[^\\]\\r\\n]+\\]\\[[^\\]\\r\\n]*\\]");
     private static final Pattern BARE_URL = Pattern.compile("(?i)\\b(?:https?://|www\\.)[^\\s<>()]+(?:\\([^\\s<>()]*\\)[^\\s<>()]*)*");
+    private static final Pattern BARE_EMAIL = Pattern.compile("(?i)(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}(?![A-Z0-9._%+-])");
     private static final Pattern REFERENCE_LINK = Pattern.compile("(?m)^\\s{0,3}\\[[^\\]\\r\\n]+\\]:\\s*\\S+.*$");
     private static final Pattern FOOTNOTE = Pattern.compile("(?m)^\\s{0,3}\\[\\^[^\\]\\r\\n]+\\]:\\s+.*$");
     private static final Pattern HR = Pattern.compile("(?m)^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$");
     private static final Pattern FRONT_MATTER = Pattern.compile("(?s)^\\s*---\\R.+?\\R---\\R");
-    private static final Pattern HTML_INLINE_HINT = Pattern.compile("(?i)</?(?:br|kbd|mark|sub|sup|u|ins|del|s|small|strong|em|b|i|details|summary)\\b[^>]*>");
+    private static final Pattern HTML_BLOCK_HINT = Pattern.compile("(?im)^\\s{0,3}</?(?:address|article|aside|blockquote|details|div|dl|dt|dd|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|summary|table|thead|tbody|tfoot|tr|td|th|ul)\\b[^>]*>");
+    private static final Pattern GFM_ALERT = Pattern.compile("(?im)^\\s{0,3}>\\s*\\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\\]\\s*$");
+    private static final Pattern HTML_INLINE_HINT = Pattern.compile("(?i)</?(?:a|abbr|br|code|kbd|mark|span|sub|sup|u|ins|del|s|small|strong|em|b|i|img)\\b[^>]*>");
     private static final String HARD_BREAK = "\u0000NOTIZEN_MD_BR\u0000";
+    private static final Set<String> ALLOWED_HTML_ELEMENTS = allowedHtmlElements();
 
     private LegacyMarkdownPreviewModel() {}
 
@@ -81,9 +89,14 @@ public final class LegacyMarkdownPreviewModel {
         if (INLINE_CODE.matcher(text).find()) score += 1;
         if (INLINE_STRIKE.matcher(text).find()) score += 1;
         if (INLINE_MARK.matcher(text).find()) score += 1;
+        if (INLINE_INS.matcher(text).find()) score += 1;
+        if (INLINE_MATH.matcher(text).find()) score += 1;
         if (INLINE_EMPHASIS.matcher(text).find()) score += 1;
         if (BARE_URL.matcher(text).find()) score += 1;
+        if (BARE_EMAIL.matcher(text).find()) score += 1;
         if (HTML_INLINE_HINT.matcher(text).find()) score += 1;
+        if (HTML_BLOCK_HINT.matcher(text).find()) score += 1;
+        if (GFM_ALERT.matcher(text).find()) score += 2;
         return score;
     }
 
@@ -112,7 +125,9 @@ public final class LegacyMarkdownPreviewModel {
     }
 
     public static String toHtmlDocument(String rawText) {
-        String fragment = markdownToHtmlFragment(rawText);
+        String clean = cleanRawText(rawText);
+        String fragment = commonmarkToHtmlFragmentIfAvailable(clean);
+        if (fragment == null) fragment = markdownToHtmlFragment(clean);
         return "<!doctype html><html><head><meta charset=\"utf-8\">"
                 + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
                 + "<style>"
@@ -127,7 +142,8 @@ public final class LegacyMarkdownPreviewModel {
                 + "ul,ol{margin:.55em 0 .55em 1.4em;padding-left:1.1em;}li{margin:.22em 0;}li>p:first-child{margin-top:.15em;}li>p:last-child{margin-bottom:.15em;}"
                 + "hr{border:0;border-top:1px solid #cfd6df;margin:.9em 0;}dl{margin:.55em 0;}dt{font-weight:700;}dd{margin:0 0 .45em 1.25em;}"
                 + "mark{background:#fff4a3;padding:0 .08em;}kbd{border:1px solid #c8d2df;border-bottom-width:2px;border-radius:4px;background:#f8fafc;padding:.05em .3em;font-family:monospace;}"
-                + ".task{font-family:monospace;margin-right:.35em;}.task.done{color:#166534;}.md-image{max-width:100%;height:auto;border:1px solid #e5e7eb;border-radius:4px;}.md-image-alt{color:#6b7280;font-style:italic;}"
+                + ".task{font-family:monospace;margin-right:.35em;}.task.done{color:#166534;}.task-checkbox{margin-right:.35em;vertical-align:-.08em;}.md-image{max-width:100%;height:auto;border:1px solid #e5e7eb;border-radius:4px;}.md-image-alt{color:#6b7280;font-style:italic;}"
+                + ".md-alert,.markdown-alert{border-left-width:5px;}.md-alert-title,.markdown-alert-title{font-weight:700;margin-bottom:.25em;}.md-alert-note,.markdown-alert-note{border-left-color:#3b82f6;}.md-alert-tip,.markdown-alert-tip{border-left-color:#16a34a;}.md-alert-important,.markdown-alert-important{border-left-color:#7c3aed;}.md-alert-warning,.markdown-alert-warning{border-left-color:#d97706;}.md-alert-caution,.markdown-alert-caution{border-left-color:#dc2626;}.math{font-family:serif;background:#f8fafc;border:1px solid #e5e7eb;border-radius:4px;padding:.04em .22em;}div.math{display:block;margin:.55em 0;padding:.45em .6em;overflow:auto;}"
                 + ".footnotes{border-top:1px solid #d8e0ea;margin-top:1em;padding-top:.4em;font-size:.92em;color:#374151;}.footnote-backref{margin-left:.35em;text-decoration:none;}"
                 + "</style></head><body>" + fragment + "</body></html>";
     }
@@ -135,6 +151,299 @@ public final class LegacyMarkdownPreviewModel {
     public static String markdownToHtmlFragment(String rawText) {
         MarkdownRenderer renderer = new MarkdownRenderer(cleanRawText(rawText));
         return renderer.render();
+    }
+
+
+    /**
+     * Prefer a real CommonMark parser when the Android APK includes it.  The
+     * core tests intentionally compile without external jars, so this path is
+     * reflective and falls back to the local renderer when the dependency is not
+     * available.  This gives APK builds CommonMark/GFM coverage without making
+     * the portable Java core unbuildable in minimal environments.
+     */
+    private static String commonmarkToHtmlFragmentIfAvailable(String rawText) {
+        if (Boolean.getBoolean("notizen.markdown.forceLegacyRenderer")) return null;
+        try {
+            ArrayList<Object> extensions = new ArrayList<>();
+            addCommonmarkExtension(extensions, "org.commonmark.ext.autolink.AutolinkExtension");
+            addCommonmarkExtension(extensions, "org.commonmark.ext.gfm.strikethrough.StrikethroughExtension");
+            addCommonmarkExtension(extensions, "org.commonmark.ext.gfm.tables.TablesExtension");
+            addCommonmarkExtension(extensions, "org.commonmark.ext.gfm.alerts.AlertsExtension");
+            addCommonmarkExtension(extensions, "org.commonmark.ext.footnotes.FootnotesExtension");
+            addCommonmarkExtension(extensions, "org.commonmark.ext.heading.anchor.HeadingAnchorExtension");
+            addCommonmarkExtension(extensions, "org.commonmark.ext.ins.InsExtension");
+            addCommonmarkExtension(extensions, "org.commonmark.ext.task.list.items.TaskListItemsExtension");
+            addCommonmarkExtension(extensions, "org.commonmark.ext.image.attributes.ImageAttributesExtension");
+            addCommonmarkExtension(extensions, "org.commonmark.ext.front.matter.YamlFrontMatterExtension");
+
+            Class<?> parserClass = Class.forName("org.commonmark.parser.Parser");
+            Object parserBuilder = parserClass.getMethod("builder").invoke(null);
+            invokeFluent(parserBuilder, "extensions", extensions);
+            Object parser = parserBuilder.getClass().getMethod("build").invoke(parserBuilder);
+            Object document = parserClass.getMethod("parse", String.class).invoke(parser, rawText == null ? "" : rawText);
+
+            Class<?> rendererClass = Class.forName("org.commonmark.renderer.html.HtmlRenderer");
+            Class<?> nodeClass = Class.forName("org.commonmark.node.Node");
+            Object rendererBuilder = rendererClass.getMethod("builder").invoke(null);
+            invokeFluent(rendererBuilder, "extensions", extensions);
+            invokeFluent(rendererBuilder, "sanitizeUrls", Boolean.TRUE);
+            invokeFluent(rendererBuilder, "escapeHtml", Boolean.FALSE);
+            Object renderer = rendererBuilder.getClass().getMethod("build").invoke(rendererBuilder);
+            String html = (String) rendererClass.getMethod("render", nodeClass).invoke(renderer, document);
+            return sanitizeRenderedHtml(html == null ? "" : html);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static void addCommonmarkExtension(List<Object> extensions, String className) {
+        try {
+            Class<?> type = Class.forName(className);
+            Object extension = null;
+            if (className.endsWith("FootnotesExtension")) {
+                try {
+                    Object builder = type.getMethod("builder").invoke(null);
+                    invokeFluent(builder, "inlineFootnotes", Boolean.TRUE);
+                    extension = builder.getClass().getMethod("build").invoke(builder);
+                } catch (Throwable ignored) {
+                    extension = null;
+                }
+            }
+            if (extension == null) extension = type.getMethod("create").invoke(null);
+            if (extension != null) extensions.add(extension);
+        } catch (Throwable ignored) {
+            // Extension is optional.  Skip it rather than disabling the preview.
+        }
+    }
+
+    private static boolean invokeFluent(Object target, String name, Object argument) {
+        if (target == null || name == null) return false;
+        java.lang.reflect.Method[] methods = target.getClass().getMethods();
+        for (java.lang.reflect.Method method : methods) {
+            if (!name.equals(method.getName()) || method.getParameterTypes().length != 1) continue;
+            Class<?> p = method.getParameterTypes()[0];
+            if (!reflectParameterAccepts(p, argument)) continue;
+            try {
+                method.invoke(target, argument);
+                return true;
+            } catch (Throwable ignored) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static boolean reflectParameterAccepts(Class<?> parameter, Object argument) {
+        if (parameter == null) return false;
+        if (parameter.isPrimitive()) {
+            return parameter == Boolean.TYPE && argument instanceof Boolean
+                    || parameter == Integer.TYPE && argument instanceof Integer
+                    || parameter == Long.TYPE && argument instanceof Long;
+        }
+        if (argument == null) return !parameter.isPrimitive();
+        return parameter.isInstance(argument)
+                || (parameter == Iterable.class && argument instanceof Iterable)
+                || (parameter == List.class && argument instanceof List);
+    }
+
+    private static String sanitizeRenderedHtml(String html) {
+        if (html == null || html.isEmpty()) return "";
+        StringBuilder out = new StringBuilder(html.length() + 16);
+        int i = 0;
+        while (i < html.length()) {
+            int lt = html.indexOf('<', i);
+            if (lt < 0) {
+                out.append(html, i, html.length());
+                break;
+            }
+            out.append(html, i, lt);
+            int gt = findHtmlTagEnd(html, lt + 1);
+            if (gt < 0) {
+                out.append("&lt;");
+                i = lt + 1;
+                continue;
+            }
+            String safe = sanitizeHtmlTag(html.substring(lt + 1, gt));
+            if (safe == null) out.append(escapeHtml(html.substring(lt, gt + 1)));
+            else out.append(safe);
+            i = gt + 1;
+        }
+        return out.toString();
+    }
+
+    private static int findHtmlTagEnd(String html, int start) {
+        boolean single = false;
+        boolean dbl = false;
+        for (int i = start; i < html.length(); i++) {
+            char c = html.charAt(i);
+            if (c == '\'' && !dbl) single = !single;
+            else if (c == '"' && !single) dbl = !dbl;
+            else if (c == '>' && !single && !dbl) return i;
+        }
+        return -1;
+    }
+
+    private static String sanitizeHtmlTag(String rawInside) {
+        if (rawInside == null) return null;
+        String s = rawInside.trim();
+        if (s.isEmpty() || s.startsWith("!") || s.startsWith("?")) return null;
+        boolean closing = s.startsWith("/");
+        if (closing) s = s.substring(1).trim();
+        int nameEnd = 0;
+        while (nameEnd < s.length() && (Character.isLetterOrDigit(s.charAt(nameEnd)) || s.charAt(nameEnd) == '-')) nameEnd++;
+        if (nameEnd <= 0) return null;
+        String name = s.substring(0, nameEnd).toLowerCase(Locale.ROOT);
+        if (!isAllowedHtmlElement(name)) return null;
+        if (closing) return "</" + name + ">";
+        String rest = s.substring(nameEnd).trim();
+        boolean selfClosing = rest.endsWith("/");
+        if (selfClosing) rest = rest.substring(0, rest.length() - 1).trim();
+        Map<String, String> attrs = parseHtmlAttributes(rest);
+        StringBuilder out = new StringBuilder("<").append(name);
+        appendSafeAttributes(out, name, attrs);
+        if (isVoidHtmlElement(name)) out.append('>');
+        else out.append(selfClosing ? "/>" : ">");
+        return out.toString();
+    }
+
+    private static Map<String, String> parseHtmlAttributes(String raw) {
+        LinkedHashMap<String, String> attrs = new LinkedHashMap<>();
+        if (raw == null || raw.isEmpty()) return attrs;
+        int i = 0;
+        while (i < raw.length()) {
+            while (i < raw.length() && Character.isWhitespace(raw.charAt(i))) i++;
+            int nameStart = i;
+            while (i < raw.length()) {
+                char c = raw.charAt(i);
+                if (Character.isLetterOrDigit(c) || c == '-' || c == '_' || c == ':' || c == '.') i++;
+                else break;
+            }
+            if (i <= nameStart) { i++; continue; }
+            String name = raw.substring(nameStart, i).toLowerCase(Locale.ROOT);
+            while (i < raw.length() && Character.isWhitespace(raw.charAt(i))) i++;
+            String value = "";
+            if (i < raw.length() && raw.charAt(i) == '=') {
+                i++;
+                while (i < raw.length() && Character.isWhitespace(raw.charAt(i))) i++;
+                if (i < raw.length() && (raw.charAt(i) == '"' || raw.charAt(i) == '\'')) {
+                    char quote = raw.charAt(i++);
+                    int valueStart = i;
+                    while (i < raw.length() && raw.charAt(i) != quote) i++;
+                    value = raw.substring(valueStart, Math.min(i, raw.length()));
+                    if (i < raw.length() && raw.charAt(i) == quote) i++;
+                } else {
+                    int valueStart = i;
+                    while (i < raw.length() && !Character.isWhitespace(raw.charAt(i))) i++;
+                    value = raw.substring(valueStart, i);
+                }
+            }
+            if (!attrs.containsKey(name)) attrs.put(name, decodeBasicHtmlEntities(value));
+        }
+        return attrs;
+    }
+
+    private static void appendSafeAttributes(StringBuilder out, String tag, Map<String, String> attrs) {
+        if (out == null || tag == null || attrs == null || attrs.isEmpty()) return;
+        for (Map.Entry<String, String> e : attrs.entrySet()) {
+            String name = e.getKey();
+            String value = e.getValue() == null ? "" : e.getValue();
+            if (isSafeGlobalAttribute(name, value)) {
+                appendHtmlAttribute(out, name, value);
+                continue;
+            }
+            if (tag.equals("a") && name.equals("href") && safeUrl(value)) appendHtmlAttribute(out, name, value);
+            else if (tag.equals("a") && name.equals("title")) appendHtmlAttribute(out, name, value);
+            else if (tag.equals("img") && name.equals("src") && safeImageUrl(value)) appendHtmlAttribute(out, name, value);
+            else if (tag.equals("img") && (name.equals("alt") || name.equals("title"))) appendHtmlAttribute(out, name, value);
+            else if (tag.equals("img") && (name.equals("width") || name.equals("height")) && value.matches("[0-9]{1,5}|[0-9]{1,3}%")) appendHtmlAttribute(out, name, value);
+            else if ((tag.equals("th") || tag.equals("td")) && name.equals("align") && isSafeTextAlignValue(value)) appendHtmlAttribute(out, name, value.toLowerCase(Locale.ROOT));
+            else if ((tag.equals("th") || tag.equals("td")) && name.equals("style") && isSafeTextAlignStyle(value)) appendHtmlAttribute(out, name, normalizeTextAlignStyle(value));
+            else if (tag.equals("ol") && name.equals("start") && value.matches("[0-9]{1,9}")) appendHtmlAttribute(out, name, value);
+            else if (tag.equals("ol") && name.equals("reversed")) appendBooleanHtmlAttribute(out, name);
+            else if (tag.equals("details") && name.equals("open")) appendBooleanHtmlAttribute(out, name);
+            else if (tag.equals("input") && name.equals("type") && value.equalsIgnoreCase("checkbox")) appendHtmlAttribute(out, name, "checkbox");
+            else if (tag.equals("input") && (name.equals("disabled") || name.equals("checked"))) appendBooleanHtmlAttribute(out, name);
+        }
+    }
+
+    private static boolean isSafeGlobalAttribute(String name, String value) {
+        if (name == null) return false;
+        if (name.equals("id")) return value != null && value.matches("[A-Za-z0-9][A-Za-z0-9_.:-]{0,96}");
+        if (name.equals("class")) return value != null && value.matches("[A-Za-z0-9 _.:\\-]{0,200}");
+        if (name.equals("title") || name.equals("aria-label")) return value != null && value.length() <= 512;
+        return false;
+    }
+
+    private static void appendHtmlAttribute(StringBuilder out, String name, String value) {
+        out.append(' ').append(name).append("=\"").append(escapeAttr(value == null ? "" : value)).append('"');
+    }
+
+    private static void appendBooleanHtmlAttribute(StringBuilder out, String name) {
+        out.append(' ').append(name);
+    }
+
+    private static boolean isSafeTextAlignValue(String value) {
+        if (value == null) return false;
+        String v = value.trim().toLowerCase(Locale.ROOT);
+        return v.equals("left") || v.equals("right") || v.equals("center");
+    }
+
+    private static boolean isSafeTextAlignStyle(String value) {
+        return normalizeTextAlignStyle(value) != null;
+    }
+
+    private static String normalizeTextAlignStyle(String value) {
+        if (value == null) return null;
+        String v = value.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+        if (v.endsWith(";")) v = v.substring(0, v.length() - 1);
+        if (v.equals("text-align:left")) return "text-align:left";
+        if (v.equals("text-align:right")) return "text-align:right";
+        if (v.equals("text-align:center")) return "text-align:center";
+        return null;
+    }
+
+    private static String decodeBasicHtmlEntities(String value) {
+        if (value == null || value.indexOf('&') < 0) return value == null ? "" : value;
+        return value.replace("&quot;", "\"")
+                .replace("&#34;", "\"")
+                .replace("&#x22;", "\"")
+                .replace("&#39;", "'")
+                .replace("&#x27;", "'")
+                .replace("&apos;", "'")
+                .replace("&lt;", "<")
+                .replace("&#60;", "<")
+                .replace("&#x3c;", "<")
+                .replace("&gt;", ">")
+                .replace("&#62;", ">")
+                .replace("&#x3e;", ">")
+                .replace("&amp;", "&");
+    }
+
+    private static boolean isAllowedHtmlElement(String name) {
+        return ALLOWED_HTML_ELEMENTS.contains(name);
+    }
+
+    private static boolean isVoidHtmlElement(String name) {
+        return name.equals("br") || name.equals("hr") || name.equals("img") || name.equals("input");
+    }
+
+    private static boolean isInlineHtmlElement(String name) {
+        return name != null && (name.equals("a") || name.equals("abbr") || name.equals("br") || name.equals("code") || name.equals("em") || name.equals("strong")
+                || name.equals("b") || name.equals("i") || name.equals("img") || name.equals("ins") || name.equals("del") || name.equals("s")
+                || name.equals("kbd") || name.equals("mark") || name.equals("small") || name.equals("span") || name.equals("sub") || name.equals("sup")
+                || name.equals("u"));
+    }
+
+    private static Set<String> allowedHtmlElements() {
+        LinkedHashSet<String> set = new LinkedHashSet<>();
+        String[] names = {
+                "a", "abbr", "address", "article", "aside", "blockquote", "br", "code", "dd", "del", "details", "div", "dl", "dt", "em",
+                "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "i", "img", "input", "ins",
+                "kbd", "li", "main", "mark", "nav", "ol", "p", "pre", "s", "section", "small", "span", "strong", "sub", "summary",
+                "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "u", "ul"
+        };
+        for (String n : names) set.add(n);
+        return set;
     }
 
     private static boolean isBlank(String s) {
@@ -202,7 +511,15 @@ public final class LegacyMarkdownPreviewModel {
         String t = line == null ? "" : line.trim();
         Matcher m = Pattern.compile("^(#{1,6})\\s+(.+?)\\s*#*\\s*$").matcher(t);
         if (!m.matches()) return null;
-        return m.group(1).length() + "\n" + m.group(2);
+        HeadingText heading = extractExplicitHeadingId(m.group(2));
+        return m.group(1).length() + "\n" + heading.text + "\n" + heading.id;
+    }
+
+    private static HeadingText extractExplicitHeadingId(String raw) {
+        String text = raw == null ? "" : raw.trim();
+        Matcher id = Pattern.compile("^(.*?)\\s+\\{#([A-Za-z0-9_.:-]+)\\}\\s*$").matcher(text);
+        if (id.matches()) return new HeadingText(id.group(1).trim(), id.group(2));
+        return new HeadingText(text, "");
     }
 
     private static ListMarker parseListMarker(String line) {
@@ -230,12 +547,26 @@ public final class LegacyMarkdownPreviewModel {
         String line = lines.get(index);
         if (isBlank(line)) return true;
         if (headingLineContent(line) != null || isFenceStart(line) || isHr(line) || isListLine(line)) return true;
-        if (isBlockQuoteLine(line)) return true;
+        if (isBlockQuoteLine(line) || isHtmlBlockLine(line)) return true;
         if (index + 1 < lines.size() && isTableStart(lines, index)) return true;
         if (index + 1 < lines.size() && isSetextUnderline(lines.get(index + 1))) return true;
         if (line.startsWith("    ") || line.startsWith("\t")) return true;
         if (index + 1 < lines.size() && lines.get(index + 1).trim().startsWith(":")) return true;
         return false;
+    }
+
+    private static boolean isHtmlBlockLine(String line) {
+        if (line == null) return false;
+        if (leadingSpaces(line) > 3) return false;
+        String t = line.trim();
+        if (!t.startsWith("<") || t.length() < 2) return false;
+        if (t.startsWith("<!--") || t.startsWith("<![CDATA[") || t.matches("(?i)^<![A-Z].*")) return true;
+        if (t.startsWith("<?")) return true;
+        Matcher m = Pattern.compile("^</?([A-Za-z][A-Za-z0-9-]*)\\b.*").matcher(t);
+        if (!m.matches()) return false;
+        String name = m.group(1).toLowerCase(Locale.ROOT);
+        if (!isAllowedHtmlElement(name)) return false;
+        return !isInlineHtmlElement(name) || name.equals("hr") || name.equals("br");
     }
 
     private static boolean isSetextUnderline(String line) {
@@ -457,6 +788,12 @@ public final class LegacyMarkdownPreviewModel {
         return r.substring(1, r.length() - 1);
     }
 
+    private static final class HeadingText {
+        final String text;
+        final String id;
+        HeadingText(String text, String id) { this.text = text == null ? "" : text; this.id = id == null ? "" : id; }
+    }
+
     private static final class LinkParts {
         final String url;
         final String title;
@@ -503,6 +840,7 @@ public final class LegacyMarkdownPreviewModel {
         private final ArrayList<String> lines = new ArrayList<>();
         private final LinkedHashMap<String, LinkRef> refs = new LinkedHashMap<>();
         private final LinkedHashMap<String, ArrayList<String>> footnotes = new LinkedHashMap<>();
+        private int inlineFootnoteCounter = 0;
 
         MarkdownRenderer(String raw) {
             String[] source = (raw == null ? "" : raw.replace("\r\n", "\n").replace('\r', '\n')).split("\n", -1);
@@ -538,8 +876,18 @@ public final class LegacyMarkdownPreviewModel {
                 if (rm.matches()) {
                     LinkParts parts = parseLinkParts(rm.group(2));
                     if (!parts.url.isEmpty()) {
-                        refs.put(normalizeRefId(rm.group(1)), new LinkRef(parts.url, parts.title));
-                        i++;
+                        String title = parts.title;
+                        int extra = 0;
+                        if (title.isEmpty() && i + 1 < source.length) {
+                            String candidate = source[i + 1] == null ? "" : source[i + 1].trim();
+                            String nextTitle = parseOptionalTitle(candidate);
+                            if (!nextTitle.isEmpty()) {
+                                title = unescapeMarkdown(nextTitle);
+                                extra = 1;
+                            }
+                        }
+                        refs.put(normalizeRefId(rm.group(1)), new LinkRef(parts.url, title));
+                        i += 1 + extra;
                         continue;
                     }
                 }
@@ -593,15 +941,23 @@ public final class LegacyMarkdownPreviewModel {
                 String heading = headingLineContent(line);
                 if (heading != null) {
                     int nl = heading.indexOf('\n');
+                    int lastNl = heading.lastIndexOf('\n');
                     int level = Integer.parseInt(heading.substring(0, nl));
-                    out.append("<h").append(level).append('>').append(renderInline(heading.substring(nl + 1))).append("</h").append(level).append('>');
+                    String headingText = lastNl > nl ? heading.substring(nl + 1, lastNl) : heading.substring(nl + 1);
+                    String headingId = lastNl > nl ? heading.substring(lastNl + 1) : "";
+                    out.append("<h").append(level);
+                    if (!headingId.isEmpty()) out.append(" id=\"").append(escapeAttr(headingId)).append("\"");
+                    out.append('>').append(renderInline(headingText)).append("</h").append(level).append('>');
                     i++;
                     continue;
                 }
 
                 if (i + 1 < end && !isBlank(line) && isSetextUnderline(src.get(i + 1)) && !isTableStart(src, i)) {
                     int level = src.get(i + 1).trim().startsWith("=") ? 1 : 2;
-                    out.append("<h").append(level).append('>').append(renderInline(line.trim())).append("</h").append(level).append('>');
+                    HeadingText setextHeading = extractExplicitHeadingId(line.trim());
+                    out.append("<h").append(level);
+                    if (!setextHeading.id.isEmpty()) out.append(" id=\"").append(escapeAttr(setextHeading.id)).append("\"");
+                    out.append('>').append(renderInline(setextHeading.text)).append("</h").append(level).append('>');
                     i += 2;
                     continue;
                 }
@@ -609,6 +965,11 @@ public final class LegacyMarkdownPreviewModel {
                 if (isHr(line)) {
                     out.append("<hr>");
                     i++;
+                    continue;
+                }
+
+                if (isHtmlBlockLine(line)) {
+                    i = renderHtmlBlock(out, src, i, end);
                     continue;
                 }
 
@@ -639,6 +1000,19 @@ public final class LegacyMarkdownPreviewModel {
 
                 i = renderParagraph(out, src, i, end);
             }
+        }
+
+        private int renderHtmlBlock(StringBuilder out, List<String> src, int i, int end) {
+            StringBuilder html = new StringBuilder();
+            int j = i;
+            while (j < end && !isBlank(src.get(j))) {
+                if (j > i && isBlockStart(src, j) && !isHtmlBlockLine(src.get(j))) break;
+                if (html.length() > 0) html.append('\n');
+                html.append(src.get(j).trim());
+                j++;
+            }
+            out.append(sanitizeRenderedHtml(html.toString()));
+            return j;
         }
 
         private int renderFencedCode(StringBuilder out, List<String> src, int i, int end) {
@@ -708,25 +1082,53 @@ public final class LegacyMarkdownPreviewModel {
             ArrayList<String> quote = new ArrayList<>();
             int j = i;
             boolean consumed = false;
+            boolean afterBlank = false;
             while (j < end) {
                 String line = src.get(j);
                 if (isBlockQuoteLine(line)) {
                     quote.add(stripBlockQuoteMarker(line));
                     consumed = true;
+                    afterBlank = false;
                     j++;
                     continue;
                 }
                 if (consumed && isBlank(line)) {
                     quote.add("");
+                    afterBlank = true;
+                    j++;
+                    continue;
+                }
+                if (consumed && !afterBlank && !isBlockStart(src, j)) {
+                    quote.add(line);
                     j++;
                     continue;
                 }
                 break;
             }
-            out.append("<blockquote>");
+            String alert = "";
+            if (!quote.isEmpty()) {
+                Matcher m = Pattern.compile("^\\s*\\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\\]\\s*$", Pattern.CASE_INSENSITIVE).matcher(quote.get(0));
+                if (m.matches()) {
+                    alert = m.group(1).toLowerCase(Locale.ROOT);
+                    quote.remove(0);
+                    while (!quote.isEmpty() && isBlank(quote.get(0))) quote.remove(0);
+                }
+            }
+            out.append("<blockquote");
+            if (!alert.isEmpty()) out.append(" class=\"md-alert md-alert-").append(escapeAttr(alert)).append("\"");
+            out.append('>');
+            if (!alert.isEmpty()) out.append("<div class=\"md-alert-title\">").append(alertLabel(alert)).append("</div>");
             renderBlocks(out, quote, 0, quote.size());
             out.append("</blockquote>");
             return j;
+        }
+
+        private String alertLabel(String alert) {
+            if ("tip".equals(alert)) return "Tipp";
+            if ("important".equals(alert)) return "Wichtig";
+            if ("warning".equals(alert)) return "Warnung";
+            if ("caution".equals(alert)) return "Vorsicht";
+            return "Hinweis";
         }
 
         private int renderList(StringBuilder out, List<String> src, int i, int end) {
@@ -745,11 +1147,11 @@ public final class LegacyMarkdownPreviewModel {
                 ArrayList<String> itemLines = new ArrayList<>();
                 String firstContent = marker.content;
                 String taskHtml = "";
-                Matcher taskM = Pattern.compile("^\\[([ xX])\\]\\s+(.*)$").matcher(firstContent);
+                Matcher taskM = Pattern.compile("^\\[([ xX])\\](?:\\s+(.*))?$").matcher(firstContent);
                 if (taskM.matches()) {
                     boolean done = taskM.group(1).trim().equalsIgnoreCase("x");
-                    taskHtml = "<span class=\"task " + (done ? "done" : "open") + "\">" + (done ? "☑" : "☐") + "</span>";
-                    firstContent = taskM.group(2);
+                    taskHtml = "<input class=\"task-checkbox\" type=\"checkbox\" disabled" + (done ? " checked" : "") + "><span class=\"task " + (done ? "done" : "open") + "\">" + (done ? "☑" : "☐") + "</span>";
+                    firstContent = taskM.group(2) == null ? "" : taskM.group(2);
                 }
                 itemLines.add(firstContent);
                 int contentIndent = marker.contentIndent;
@@ -892,6 +1294,26 @@ public final class LegacyMarkdownPreviewModel {
                         continue;
                     }
                 }
+                if (startsWith(text, i, "^[")) {
+                    int close = findMatchingBracket(text, i + 1);
+                    if (close > i + 2) {
+                        String id = "inline-" + (++inlineFootnoteCounter);
+                        ArrayList<String> body = new ArrayList<>();
+                        body.add(text.substring(i + 2, close));
+                        footnotes.put(id, body);
+                        out.append("<sup id=\"fnref-").append(escapeAttr(id)).append("\"><a href=\"#fn-").append(escapeAttr(id)).append("\">[").append(inlineFootnoteCounter).append("]</a></sup>");
+                        i = close + 1;
+                        continue;
+                    }
+                }
+                if (c == '$') {
+                    CodeSpan math = parseMathSpan(text, i);
+                    if (math != null) {
+                        out.append("<span class=\"math\">").append(escapeHtml(math.code)).append("</span>");
+                        i = math.end;
+                        continue;
+                    }
+                }
                 if (startsWith(text, i, "![")) {
                     LinkToken token = parseLinkToken(text, i, true);
                     if (token != null) {
@@ -953,6 +1375,12 @@ public final class LegacyMarkdownPreviewModel {
                     i = bare.end;
                     continue;
                 }
+                BareLink email = parseBareEmail(text, i);
+                if (email != null) {
+                    out.append("<a href=\"").append(escapeAttr(email.href)).append("\">").append(escapeHtml(email.label)).append("</a>");
+                    i = email.end;
+                    continue;
+                }
                 if (startsWith(text, i, "***") || startsWith(text, i, "___")) {
                     String token = text.substring(i, i + 3);
                     int close = findClosingDelimiter(text, i, token);
@@ -984,6 +1412,30 @@ public final class LegacyMarkdownPreviewModel {
                     if (close > i + 2) {
                         out.append("<mark>").append(renderInline(text.substring(i + 2, close))).append("</mark>");
                         i = close + 2;
+                        continue;
+                    }
+                }
+                if (startsWith(text, i, "++")) {
+                    int close = findClosingDelimiter(text, i, "++");
+                    if (close > i + 2) {
+                        out.append("<ins>").append(renderInline(text.substring(i + 2, close))).append("</ins>");
+                        i = close + 2;
+                        continue;
+                    }
+                }
+                if (c == '^' && !startsWith(text, i, "^[")) {
+                    int close = findClosingDelimiter(text, i, "^");
+                    if (close > i + 1) {
+                        out.append("<sup>").append(renderInline(text.substring(i + 1, close))).append("</sup>");
+                        i = close + 1;
+                        continue;
+                    }
+                }
+                if (c == '~' && !startsWith(text, i, "~~")) {
+                    int close = findClosingDelimiter(text, i, "~");
+                    if (close > i + 1) {
+                        out.append("<sub>").append(renderInline(text.substring(i + 1, close))).append("</sub>");
+                        i = close + 1;
                         continue;
                     }
                 }
@@ -1025,6 +1477,27 @@ public final class LegacyMarkdownPreviewModel {
                 } else {
                     i++;
                 }
+            }
+            return null;
+        }
+
+        private CodeSpan parseMathSpan(String text, int start) {
+            int run = startsWith(text, start, "$$") ? 2 : 1;
+            int bodyStart = start + run;
+            if (bodyStart >= text.length() || Character.isWhitespace(text.charAt(bodyStart))) return null;
+            int i = bodyStart;
+            while (i <= text.length() - run) {
+                if (text.charAt(i) == '\\') { i += 2; continue; }
+                if (run == 2 && startsWith(text, i, "$$")) {
+                    String body = text.substring(bodyStart, i).trim();
+                    if (!body.isEmpty()) return new CodeSpan(body, i + 2);
+                    return null;
+                }
+                if (run == 1 && text.charAt(i) == '$') {
+                    if (i > bodyStart && !Character.isWhitespace(text.charAt(i - 1))) return new CodeSpan(text.substring(bodyStart, i), i + 1);
+                    return null;
+                }
+                i++;
             }
             return null;
         }
@@ -1120,18 +1593,13 @@ public final class LegacyMarkdownPreviewModel {
             if (inside == null || inside.isEmpty()) return null;
             String s = inside.trim();
             boolean closing = s.startsWith("/");
-            boolean selfClosing = s.endsWith("/");
             String nameSource = closing ? s.substring(1).trim() : s;
             int end = 0;
-            while (end < nameSource.length() && Character.isLetterOrDigit(nameSource.charAt(end))) end++;
+            while (end < nameSource.length() && (Character.isLetterOrDigit(nameSource.charAt(end)) || nameSource.charAt(end) == '-')) end++;
             if (end <= 0) return null;
             String name = nameSource.substring(0, end).toLowerCase(Locale.ROOT);
-            if (!(name.equals("br") || name.equals("kbd") || name.equals("mark") || name.equals("sub") || name.equals("sup")
-                    || name.equals("u") || name.equals("ins") || name.equals("del") || name.equals("s") || name.equals("small")
-                    || name.equals("strong") || name.equals("em") || name.equals("b") || name.equals("i") || name.equals("details") || name.equals("summary"))) return null;
-            if (name.equals("br")) return "<br>";
-            if (closing) return "</" + name + ">";
-            return "<" + name + (selfClosing ? "/>" : ">");
+            if (!isInlineHtmlElement(name)) return null;
+            return sanitizeHtmlTag(inside);
         }
 
         private BareLink parseBareLink(String text, int start) {
@@ -1140,7 +1608,7 @@ public final class LegacyMarkdownPreviewModel {
                 if (Character.isLetterOrDigit(prev) || prev == '@') return null;
             }
             String lower = text.substring(start).toLowerCase(Locale.ROOT);
-            boolean hasScheme = lower.startsWith("http://") || lower.startsWith("https://");
+            boolean hasScheme = lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("ftp://");
             boolean hasWww = lower.startsWith("www.");
             if (!hasScheme && !hasWww) return null;
             int end = start;
@@ -1156,6 +1624,21 @@ public final class LegacyMarkdownPreviewModel {
             String href = hasWww ? "https://" + label : label;
             if (!safeUrl(href)) return null;
             return new BareLink(label, href, end);
+        }
+
+        private BareLink parseBareEmail(String text, int start) {
+            if (text == null || start < 0 || start >= text.length()) return null;
+            if (start > 0) {
+                char prev = text.charAt(start - 1);
+                if (Character.isLetterOrDigit(prev) || "._%+-@".indexOf(prev) >= 0) return null;
+            }
+            Matcher m = Pattern.compile("(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}").matcher(text.substring(start));
+            if (!m.lookingAt()) return null;
+            int end = start + m.end();
+            while (end > start && ".,;:!?".indexOf(text.charAt(end - 1)) >= 0) end--;
+            if (end <= start) return null;
+            String label = text.substring(start, end);
+            return new BareLink(label, "mailto:" + label, end);
         }
 
         private int countChar(String s, char ch) {

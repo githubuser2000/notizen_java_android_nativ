@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+SCRIPT="$PREFIX/share/notizen-android-native/NotizenAndroidNative/termux-setup-sdk.sh"
+
+exec bash "$SCRIPT" "$@"

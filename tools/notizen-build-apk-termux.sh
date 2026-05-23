@@ -21,6 +21,26 @@ APKSIGNER="${APKSIGNER:-$(command -v apksigner || true)}"
 ZIPALIGN="${ZIPALIGN:-$(command -v zipalign || true)}"
 JAVAC="${JAVAC:-javac}"
 ZIP="${ZIP:-zip}"
+CURL="${CURL:-$(command -v curl || true)}"
+WGET="${WGET:-$(command -v wget || true)}"
+COMMONMARK_VERSION="${COMMONMARK_VERSION:-0.28.0}"
+INCLUDE_COMMONMARK_DEPS="${INCLUDE_COMMONMARK_DEPS:-1}"
+COMMONMARK_REPO_URL="${COMMONMARK_REPO_URL:-https://repo1.maven.org/maven2}"
+COMMONMARK_DEPS_DIR="${COMMONMARK_DEPS_DIR:-$PROJECT_DIR/build/markdown-deps}"
+COMMONMARK_ARTIFACTS=(
+  commonmark
+  commonmark-ext-autolink
+  commonmark-ext-gfm-strikethrough
+  commonmark-ext-gfm-tables
+  commonmark-ext-gfm-alerts
+  commonmark-ext-footnotes
+  commonmark-ext-heading-anchor
+  commonmark-ext-ins
+  commonmark-ext-task-list-items
+  commonmark-ext-image-attributes
+  commonmark-ext-yaml-front-matter
+)
+COMMONMARK_JARS=()
 KEYSTORE="${KEYSTORE:-$HOME/.android/debug.keystore}"
 KEY_ALIAS="${KEY_ALIAS:-androiddebugkey}"
 STOREPASS="${STOREPASS:-android}"
@@ -30,6 +50,50 @@ need_file() { [ -f "$1" ] || { echo "Fehlt: $1" >&2; exit 1; }; }
 need_exec() { [ -n "$1" ] && [ -x "$1" ] || { echo "Fehlt/ nicht ausführbar: $2" >&2; exit 1; }; }
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Fehlt im PATH: $1" >&2; exit 1; }; }
 
+download_file() {
+  local url="$1"
+  local target="$2"
+  if [ -n "$CURL" ] && [ -x "$CURL" ]; then
+    "$CURL" -fL --retry 2 --connect-timeout 20 -o "$target" "$url"
+  elif [ -n "$WGET" ] && [ -x "$WGET" ]; then
+    "$WGET" -O "$target" "$url"
+  else
+    echo "Fehlt: curl oder wget für CommonMark-Abhängigkeiten. Setze INCLUDE_COMMONMARK_DEPS=0 für den Fallback-Renderer." >&2
+    exit 1
+  fi
+}
+
+ensure_commonmark_deps() {
+  COMMONMARK_JARS=()
+  if [ "$INCLUDE_COMMONMARK_DEPS" = "0" ]; then
+    echo "==> CommonMark-Abhängigkeiten übersprungen; der lokale Markdown-Fallback bleibt aktiv."
+    return
+  fi
+  mkdir -p "$COMMONMARK_DEPS_DIR"
+  local artifact jar url tmp
+  for artifact in "${COMMONMARK_ARTIFACTS[@]}"; do
+    jar="$COMMONMARK_DEPS_DIR/${artifact}-${COMMONMARK_VERSION}.jar"
+    if [ ! -s "$jar" ]; then
+      url="$COMMONMARK_REPO_URL/org/commonmark/${artifact}/${COMMONMARK_VERSION}/${artifact}-${COMMONMARK_VERSION}.jar"
+      tmp="$jar.tmp"
+      rm -f "$tmp"
+      printf '==> Lade Markdown-Abhängigkeit: %s\n' "$artifact"
+      download_file "$url" "$tmp"
+      mv "$tmp" "$jar"
+    fi
+    COMMONMARK_JARS+=("$jar")
+  done
+}
+
+join_by_colon() {
+  local joined=""
+  local item
+  for item in "$@"; do
+    if [ -z "$joined" ]; then joined="$item"; else joined="$joined:$item"; fi
+  done
+  printf '%s' "$joined"
+}
+
 need_file "$ANDROID_JAR"
 need_exec "$AAPT2" "aapt2"
 need_exec "$D8" "d8"
@@ -38,6 +102,7 @@ need_exec "$ZIPALIGN" "zipalign"
 need_cmd "$JAVAC"
 need_cmd "$ZIP"
 need_cmd keytool
+ensure_commonmark_deps
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"/res "$BUILD_DIR"/gen "$BUILD_DIR"/classes "$BUILD_DIR"/dex "$BUILD_DIR"/out
@@ -59,7 +124,11 @@ printf 'package: %s\n' "$PACKAGE"
 printf 'aapt2: %s\n' "$AAPT2"
 printf 'd8: %s\n' "$D8"
 printf 'apksigner: %s\n' "$APKSIGNER"
-printf 'zipalign: %s\n\n' "$ZIPALIGN"
+printf 'zipalign: %s\n' "$ZIPALIGN"
+if [ "${#COMMONMARK_JARS[@]}" -gt 0 ]; then
+  printf 'CommonMark/GFM jars: %s\n' "${#COMMONMARK_JARS[@]}"
+fi
+printf '\n'
 
 printf '==> Ressourcen mit aapt2 kompilieren\n'
 "$AAPT2" compile --dir "$RES_DIR" -o "$RES_ZIP"
@@ -79,8 +148,11 @@ printf '\n==> APK-Basis mit aapt2 linken\n'
 
 printf '\n==> Java nach .class kompilieren\n'
 find "$JAVA_SRC" "$BUILD_DIR/gen" -name '*.java' -print > "$BUILD_DIR/sources.txt"
+COMMONMARK_CP="$(join_by_colon "${COMMONMARK_JARS[@]}")"
+JAVAC_CP="$ANDROID_JAR:$BUILD_DIR/gen"
+if [ -n "$COMMONMARK_CP" ]; then JAVAC_CP="$JAVAC_CP:$COMMONMARK_CP"; fi
 "$JAVAC" -source 17 -target 17 \
-  -classpath "$ANDROID_JAR:$BUILD_DIR/gen" \
+  -classpath "$JAVAC_CP" \
   -sourcepath "$JAVA_SRC:$BUILD_DIR/gen" \
   -d "$BUILD_DIR/classes" \
   @"$BUILD_DIR/sources.txt"
@@ -88,7 +160,9 @@ find "$JAVA_SRC" "$BUILD_DIR/gen" -name '*.java' -print > "$BUILD_DIR/sources.tx
 printf '\n==> .class nach DEX konvertieren\n'
 find "$BUILD_DIR/classes" -name '*.class' -print > "$BUILD_DIR/classes.txt"
 mapfile -t CLASS_FILES < "$BUILD_DIR/classes.txt"
-"$D8" --lib "$ANDROID_JAR" --min-api "$MIN_SDK" --output "$BUILD_DIR/dex" "${CLASS_FILES[@]}"
+PROGRAM_FILES=("${CLASS_FILES[@]}")
+if [ "${#COMMONMARK_JARS[@]}" -gt 0 ]; then PROGRAM_FILES+=("${COMMONMARK_JARS[@]}"); fi
+"$D8" --lib "$ANDROID_JAR" --min-api "$MIN_SDK" --output "$BUILD_DIR/dex" "${PROGRAM_FILES[@]}"
 
 printf '\n==> classes.dex in APK einfügen\n'
 cp "$UNALIGNED_APK" "$UNSIGNED_APK"

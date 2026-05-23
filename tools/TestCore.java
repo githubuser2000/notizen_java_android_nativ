@@ -2423,7 +2423,7 @@ public final class TestCore {
     }
 
 
-    private static void testAndroidMarkdownExtendedCoverage() {
+    private static void testAndroidMarkdownExtendedCoverage() throws Exception {
         if (!LegacyMarkdownPreviewModel.looksLikeMarkdown("*kursiv*")) {
             throw new AssertionError("markdown extended single emphasis should activate markdown preview");
         }
@@ -2470,6 +2470,96 @@ public final class TestCore {
                 || !footHtml.contains("footnote-backref")) {
             throw new AssertionError("markdown extended multiline footnote rendering failed: " + footHtml);
         }
+
+        String alert = "> [!WARNING]\n> Achtung\nlazy continuation";
+        String alertHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(alert);
+        if (!alertHtml.contains("class=\"md-alert md-alert-warning\"")
+                || !alertHtml.contains("Warnung")
+                || !alertHtml.contains("Achtung lazy continuation")) {
+            throw new AssertionError("markdown extended GFM alert/lazy blockquote failed: " + alertHtml);
+        }
+
+        String referenceTitleNextLine = "[n]: https://example.org\n  \"Titel nächste Zeile\"\n\n[Name][n]";
+        String refHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(referenceTitleNextLine);
+        if (!refHtml.contains("href=\"https://example.org\"") || !refHtml.contains("title=\"Titel nächste Zeile\"")) {
+            throw new AssertionError("markdown extended reference title continuation failed: " + refHtml);
+        }
+
+        String inlineFootnote = "Text^[inline **Notiz**]";
+        String inlineFootnoteHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(inlineFootnote);
+        if (!inlineFootnoteHtml.contains("id=\"fn-inline-1\"") || !inlineFootnoteHtml.contains("inline <strong>Notiz</strong>")) {
+            throw new AssertionError("markdown extended inline footnote failed: " + inlineFootnoteHtml);
+        }
+
+        String richInline = "++neu++ H~2~O x^2^ $a+b$ test@example.org";
+        String richInlineHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(richInline);
+        if (!richInlineHtml.contains("<ins>neu</ins>")
+                || !richInlineHtml.contains("H<sub>2</sub>O")
+                || !richInlineHtml.contains("x<sup>2</sup>")
+                || !richInlineHtml.contains("<span class=\"math\">a+b</span>")
+                || !richInlineHtml.contains("href=\"mailto:test@example.org\"")) {
+            throw new AssertionError("markdown extended ins/sub/sup/math/email failed: " + richInlineHtml);
+        }
+
+        String explicitHeading = "## Titel {#anker}";
+        String explicitHeadingHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(explicitHeading);
+        if (!explicitHeadingHtml.contains("<h2 id=\"anker\">Titel</h2>")) {
+            throw new AssertionError("markdown extended explicit heading id failed: " + explicitHeadingHtml);
+        }
+
+        String emptyTask = "- [ ]";
+        String emptyTaskHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(emptyTask);
+        if (!emptyTaskHtml.contains("task-checkbox") || !emptyTaskHtml.contains("task open")) {
+            throw new AssertionError("markdown extended empty task item failed: " + emptyTaskHtml);
+        }
+
+        String htmlBlock = "<div class=\"safe\" onclick=\"bad\">ok</div>\n\n<table><tr><td>A</td></tr></table>";
+        String htmlBlockOut = LegacyMarkdownPreviewModel.markdownToHtmlFragment(htmlBlock);
+        if (!htmlBlockOut.contains("<div class=\"safe\">ok</div>")
+                || !htmlBlockOut.contains("<table><tr><td>A</td></tr></table>")
+                || htmlBlockOut.contains("onclick")) {
+            throw new AssertionError("markdown extended safe HTML block sanitizing failed: " + htmlBlockOut);
+        }
+
+        String htmlInline = "<span class=\"safe\" onclick=\"bad\">S</span> <a href=\"javascript:bad\">bad</a> <a href=\"https://example.org\" title=\"T\">ok</a>";
+        String htmlInlineOut = LegacyMarkdownPreviewModel.markdownToHtmlFragment(htmlInline);
+        if (!htmlInlineOut.contains("<span class=\"safe\">S</span>")
+                || !htmlInlineOut.contains("<a href=\"https://example.org\" title=\"T\">ok</a>")
+                || htmlInlineOut.contains("onclick")
+                || htmlInlineOut.contains("javascript:bad")) {
+            throw new AssertionError("markdown extended safe inline HTML sanitizing failed: " + htmlInlineOut);
+        }
+
+        String unsafeDoc = LegacyMarkdownPreviewModel.toHtmlDocument("[bad](javascript:alert(1)) <script>x</script>");
+        if (unsafeDoc.contains("href=\"javascript:") || unsafeDoc.contains("<script>")) {
+            throw new AssertionError("markdown extended HTML document sanitizer failed: " + unsafeDoc);
+        }
+
+        File gradle = new File("app/build.gradle");
+        if (!gradle.isFile()) gradle = new File("../app/build.gradle");
+        if (gradle.isFile()) {
+            String build = readUtf8File(gradle);
+            if (!build.contains("org.commonmark:commonmark:0.28.0")
+                    || !build.contains("commonmark-ext-gfm-tables")
+                    || !build.contains("commonmark-ext-task-list-items")
+                    || !build.contains("commonmark-ext-footnotes")
+                    || !build.contains("commonmark-ext-gfm-alerts")) {
+                throw new AssertionError("markdown extended CommonMark/GFM dependencies missing");
+            }
+        }
+
+        File termuxBuild = new File("tools/notizen-build-apk-termux.sh");
+        if (!termuxBuild.isFile()) termuxBuild = new File("../tools/notizen-build-apk-termux.sh");
+        if (termuxBuild.isFile()) {
+            String script = readUtf8File(termuxBuild);
+            if (!script.contains("COMMONMARK_VERSION=\"${COMMONMARK_VERSION:-0.28.0}\"")
+                    || !script.contains("commonmark-ext-gfm-alerts")
+                    || !script.contains("COMMONMARK_JARS")
+                    || !script.contains("PROGRAM_FILES+=(\"${COMMONMARK_JARS[@]}\")")) {
+                throw new AssertionError("markdown extended Termux/manual CommonMark packaging missing");
+            }
+        }
+
     }
 
 
