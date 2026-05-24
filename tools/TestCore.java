@@ -2620,8 +2620,14 @@ public final class TestCore {
                     || !bridgeText.contains("engineName()")
                     || !bridgeText.contains("--health-check")
                     || !bridgeText.contains("A &amp; B")
+                    || !bridgeText.contains("preprocessExtendedMarkdown")
+                    || !bridgeText.contains("postprocessExtendedHtml")
+                    || !bridgeText.contains("definitionListHtmlFromParagraphBody")
+                    || !bridgeText.contains("parseTableAt")
+                    || !bridgeText.contains("splitTableRow")
+                    || !bridgeText.contains("H~2~O")
                     || !bridgeText.contains("commonmark-java 0.28.0/GFM")) {
-                throw new AssertionError("markdown CommonMark bridge missing direct renderer wiring or smoke test");
+                throw new AssertionError("markdown CommonMark bridge missing direct renderer wiring, Notizen extras, or smoke test");
             }
         }
 
