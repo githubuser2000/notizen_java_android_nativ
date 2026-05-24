@@ -11,8 +11,8 @@ PACKAGE="de.notizen.android"
 MIN_SDK="${MIN_SDK:-23}"
 TARGET_SDK="${TARGET_SDK:-34}"
 COMPILE_API="${COMPILE_API:-34}"
-VERSION_CODE="${VERSION_CODE:-116}"
-VERSION_NAME="${VERSION_NAME:-1.0.116-java-android-nativ}"
+VERSION_CODE="${VERSION_CODE:-119}"
+VERSION_NAME="${VERSION_NAME:-1.0.119-java-android-nativ-md-table-verified}"
 ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
 ANDROID_JAR="${ANDROID_JAR:-$ANDROID_HOME/platforms/android-$COMPILE_API/android.jar}"
 AAPT2="${AAPT2:-$(command -v aapt2 || true)}"
@@ -161,6 +161,62 @@ add_commonmark_java_resources_to_apk() {
   ( cd "$JAVA_RES_DIR" && find . -type f -print | sed 's#^\./##' | "$ZIP" -q -u "$apk" -@ )
 }
 
+apk_dex_contains_string() {
+  local apk="$1"
+  local needle="$2"
+  local tmp_dir="$BUILD_DIR/verify-apk-dex"
+  local dex_names name out found
+  found=0
+  rm -rf "$tmp_dir"
+  mkdir -p "$tmp_dir"
+
+  # Do not use `unzip -p ... | grep -q ...` here.  With `set -o pipefail`,
+  # grep may exit as soon as it finds the marker, unzip then receives SIGPIPE,
+  # and the whole pipeline looks like a failure although the marker exists.
+  dex_names="$($JAR tf "$apk" | grep -E '^classes([0-9]+)?\.dex$' || true)"
+  if [ -z "$dex_names" ]; then
+    rm -rf "$tmp_dir"
+    return 2
+  fi
+
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    out="$tmp_dir/$(basename "$name")"
+    "$UNZIP" -p "$apk" "$name" > "$out"
+    if grep -aF "$needle" "$out" >/dev/null; then
+      found=1
+    fi
+  done <<< "$dex_names"
+
+  rm -rf "$tmp_dir"
+  [ "$found" -eq 1 ]
+}
+
+verify_commonmark_dex_dir_payload() {
+  if [ "${#COMMONMARK_JARS[@]}" -eq 0 ]; then
+    return
+  fi
+  local dex found_bridge found_marker
+  found_bridge=0
+  found_marker=0
+  for dex in "$BUILD_DIR/dex"/classes*.dex; do
+    [ -f "$dex" ] || continue
+    if grep -aF 'CommonmarkMarkdownRenderer' "$dex" >/dev/null; then found_bridge=1; fi
+    if grep -aF 'md-table-runtime-verify-v119' "$dex" >/dev/null; then found_marker=1; fi
+  done
+  if [ "$found_bridge" -ne 1 ]; then
+    echo "D8-Ausgabe enthält keinen CommonmarkMarkdownRenderer. Diese APK würde in den Fallback gehen." >&2
+    echo "DEX-Ordner: $BUILD_DIR/dex" >&2
+    exit 1
+  fi
+  if [ "$found_marker" -ne 1 ]; then
+    echo "D8-Ausgabe enthält nicht den aktuellen Markdown-Tabellen-Fix md-table-runtime-verify-v119." >&2
+    echo "DEX-Ordner: $BUILD_DIR/dex" >&2
+    exit 1
+  fi
+  echo "CommonMark DEX geprüft: CommonmarkMarkdownRenderer + md-table-runtime-verify-v119"
+}
+
 verify_commonmark_apk_payload() {
   local apk="$1"
   if [ "${#COMMONMARK_JARS[@]}" -eq 0 ]; then
@@ -171,11 +227,21 @@ verify_commonmark_apk_payload() {
     echo "APK: $apk" >&2
     exit 1
   fi
-  if ! "$UNZIP" -l "$apk" 'classes*.dex' >/dev/null 2>&1; then
-    echo "APK enthält keine DEX-Dateien." >&2
+  if ! apk_dex_contains_string "$apk" 'CommonmarkMarkdownRenderer'; then
+    echo "APK enthält keinen CommonmarkMarkdownRenderer im DEX. Diese APK würde in den Fallback gehen." >&2
     echo "APK: $apk" >&2
+    echo "DEX-Einträge in der APK:" >&2
+    "$JAR" tf "$apk" | grep -E '^classes([0-9]+)?\.dex$' >&2 || true
     exit 1
   fi
+  if ! apk_dex_contains_string "$apk" 'md-table-runtime-verify-v119'; then
+    echo "APK enthält nicht den aktuellen Markdown-Tabellen-Fix md-table-runtime-verify-v119." >&2
+    echo "APK: $apk" >&2
+    echo "DEX-Einträge in der APK:" >&2
+    "$JAR" tf "$apk" | grep -E '^classes([0-9]+)?\.dex$' >&2 || true
+    exit 1
+  fi
+  echo "CommonMark APK-DEX geprüft: CommonmarkMarkdownRenderer + md-table-runtime-verify-v119"
 }
 
 run_commonmark_jvm_smoke_test() {
@@ -307,6 +373,7 @@ mapfile -t CLASS_FILES < "$BUILD_DIR/classes.txt"
 PROGRAM_FILES=("${CLASS_FILES[@]}")
 if [ "${#COMMONMARK_JARS[@]}" -gt 0 ]; then PROGRAM_FILES+=("${COMMONMARK_JARS[@]}"); fi
 "$D8" --lib "$ANDROID_JAR" --min-api "$MIN_SDK" --output "$BUILD_DIR/dex" "${PROGRAM_FILES[@]}"
+verify_commonmark_dex_dir_payload
 
 printf '\n==> DEX-Dateien in APK einfügen\n'
 cp "$UNALIGNED_APK" "$UNSIGNED_APK"

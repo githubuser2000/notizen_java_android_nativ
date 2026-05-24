@@ -42,6 +42,9 @@ public final class LegacyMarkdownPreviewModel {
     private static final Pattern HTML_BLOCK_HINT = Pattern.compile("(?im)^\\s{0,3}</?(?:address|article|aside|blockquote|details|div|dl|dt|dd|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|summary|table|thead|tbody|tfoot|tr|td|th|ul)\\b[^>]*>");
     private static final Pattern GFM_ALERT = Pattern.compile("(?im)^\\s{0,3}>\\s*\\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\\]\\s*$");
     private static final Pattern HTML_INLINE_HINT = Pattern.compile("(?i)</?(?:a|abbr|br|code|kbd|mark|span|sub|sup|u|ins|del|s|small|strong|em|b|i|img)\\b[^>]*>");
+    private static final Pattern LOOSE_HTML_PARAGRAPH = Pattern.compile("(?is)<p(?:\\s[^>]*)?>(.*?)</p>");
+    private static final Pattern LOOSE_HTML_BREAK = Pattern.compile("(?i)<br\\s*/?>");
+    private static final String MARKDOWN_PREVIEW_BUILD_ID = "md-table-runtime-verify-v119";
     private static final String HARD_BREAK = "\u0000NOTIZEN_MD_BR\u0000";
     private static final Set<String> ALLOWED_HTML_ELEMENTS = allowedHtmlElements();
 
@@ -184,8 +187,14 @@ public final class LegacyMarkdownPreviewModel {
         PreprocessedMarkdown preprocessed = preprocessMarkdown(clean);
         String fragment = commonmarkToHtmlFragmentIfAvailable(preprocessed.body);
         if (fragment == null) fragment = markdownToHtmlFragment(preprocessed.body, false);
+        // Final safety net: if any renderer path ever lets a GFM table slip
+        // through as a paragraph with pipe rows, repair it before WebView sees
+        // it. This catches old build paths, reflective CommonMark without table
+        // extras, and RTF-extraction edge cases that introduce <br> tags.
+        fragment = repairLooseMarkdownTablesInHtmlFragment(fragment);
         fragment = preprocessed.prefixHtml + fragment;
-        String rendererComment = "<!-- Notizen Markdown renderer: " + htmlCommentText(markdownRendererStatus()) + " -->";
+        String rendererComment = "<!-- Notizen Markdown renderer: " + htmlCommentText(markdownRendererStatus())
+                + " · " + MARKDOWN_PREVIEW_BUILD_ID + " -->";
         return "<!doctype html><html><head><meta charset=\"utf-8\">"
                 + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
                 + "<style>"
@@ -204,7 +213,8 @@ public final class LegacyMarkdownPreviewModel {
                 + ".md-alert,.markdown-alert{border-left-width:5px;}.md-alert-title,.markdown-alert-title{font-weight:700;margin-bottom:.25em;}.md-alert-note,.markdown-alert-note{border-left-color:#3b82f6;}.md-alert-tip,.markdown-alert-tip{border-left-color:#16a34a;}.md-alert-important,.markdown-alert-important{border-left-color:#7c3aed;}.md-alert-warning,.markdown-alert-warning{border-left-color:#d97706;}.md-alert-caution,.markdown-alert-caution{border-left-color:#dc2626;}.math{font-family:serif;background:#f8fafc;border:1px solid #e5e7eb;border-radius:4px;padding:.04em .22em;}div.math{display:block;margin:.55em 0;padding:.45em .6em;overflow:auto;}"
                 + ".footnotes{border-top:1px solid #d8e0ea;margin-top:1em;padding-top:.4em;font-size:.92em;color:#374151;}.footnote-backref{margin-left:.35em;text-decoration:none;}"
                 + ".frontmatter{font-size:.9em;color:#4b5563;border-style:dashed;}"
-                + "</style></head><body>" + rendererComment + fragment + "</body></html>";
+                + "</style></head><body data-notizen-md-build=\"" + escapeAttr(MARKDOWN_PREVIEW_BUILD_ID) + "\">"
+                + rendererComment + fragment + "</body></html>";
     }
 
     public static String markdownToHtmlFragment(String rawText) {
@@ -369,6 +379,211 @@ public final class LegacyMarkdownPreviewModel {
         return parameter.isInstance(argument)
                 || (parameter == Iterable.class && argument instanceof Iterable)
                 || (parameter == List.class && argument instanceof List);
+    }
+
+
+    private static String repairLooseMarkdownTablesInHtmlFragment(String html) {
+        if (html == null || html.isEmpty() || !containsTablePipeChar(html)) return html == null ? "" : html;
+        Matcher m = LOOSE_HTML_PARAGRAPH.matcher(html);
+        StringBuffer sb = new StringBuffer();
+        boolean changed = false;
+        while (m.find()) {
+            String body = m.group(1) == null ? "" : m.group(1);
+            String replacement = looseMarkdownTablesFromParagraphBody(body);
+            if (replacement == null) replacement = m.group(0);
+            else changed = true;
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return changed ? sb.toString() : html;
+    }
+
+    private static String looseMarkdownTablesFromParagraphBody(String body) {
+        if (body == null || !containsTablePipeChar(body)) return null;
+        String normalized = normalizeLooseHtmlParagraph(body);
+        String[] lines = normalized.split("\n", -1);
+        if (lines.length < 2) return null;
+
+        StringBuilder out = new StringBuilder(body.length() + 80);
+        ArrayList<String> pendingParagraph = new ArrayList<>();
+        boolean changed = false;
+        int i = 0;
+        while (i < lines.length) {
+            LooseHtmlTableBlock table = parseLooseHtmlTableAt(lines, i);
+            if (table != null) {
+                appendLooseHtmlParagraph(out, pendingParagraph);
+                pendingParagraph.clear();
+                out.append(table.html);
+                changed = true;
+                i = table.endIndex + 1;
+                continue;
+            }
+            String line = lines[i] == null ? "" : lines[i];
+            if (isBlank(stripHtmlTagsForMarkdownSyntax(line))) {
+                appendLooseHtmlParagraph(out, pendingParagraph);
+                pendingParagraph.clear();
+            } else {
+                pendingParagraph.add(line);
+            }
+            i++;
+        }
+        appendLooseHtmlParagraph(out, pendingParagraph);
+        return changed ? out.toString() : null;
+    }
+
+    private static String normalizeLooseHtmlParagraph(String body) {
+        String out = LOOSE_HTML_BREAK.matcher(body == null ? "" : body).replaceAll("\n");
+        out = out.replace("\r\n", "\n").replace('\r', '\n');
+        out = out.replace('\u2028', '\n').replace('\u2029', '\n').replace('\u0085', '\n');
+        out = out.replace('\u00a0', ' ').replace('\u2007', ' ').replace('\u202f', ' ');
+        return out;
+    }
+
+    private static void appendLooseHtmlParagraph(StringBuilder out, List<String> lines) {
+        if (out == null || lines == null || lines.isEmpty()) return;
+        out.append("<p>");
+        for (int i = 0; i < lines.size(); i++) {
+            if (i > 0) out.append("<br>");
+            out.append(lines.get(i));
+        }
+        out.append("</p>");
+    }
+
+    private static LooseHtmlTableBlock parseLooseHtmlTableAt(String[] lines, int index) {
+        if (lines == null || index < 0 || index + 1 >= lines.length) return null;
+        String headerLine = lines[index] == null ? "" : lines[index];
+        List<String> header = splitLooseHtmlTableRow(headerLine);
+        if (header.size() < 1 || !hasLooseHtmlTablePipe(headerLine)) return null;
+        List<String> align = parseLooseHtmlTableAlignments(lines[index + 1], header.size());
+        if (align == null) return null;
+
+        int cols = Math.max(header.size(), align.size());
+        StringBuilder html = new StringBuilder();
+        html.append("<table><thead><tr>");
+        for (int c = 0; c < cols; c++) {
+            String a = c < align.size() ? align.get(c) : "left";
+            html.append("<th style=\"text-align:").append(a).append("\">")
+                    .append(c < header.size() ? trimMarkdownSyntax(header.get(c)) : "")
+                    .append("</th>");
+        }
+        html.append("</tr></thead><tbody>");
+
+        int j = index + 2;
+        while (j < lines.length) {
+            String line = lines[j] == null ? "" : lines[j];
+            if (isBlank(stripHtmlTagsForMarkdownSyntax(line)) || !hasLooseHtmlTablePipe(line)) break;
+            if (parseLooseHtmlTableAlignments(line, cols) != null) break;
+            List<String> row = splitLooseHtmlTableRow(line);
+            html.append("<tr>");
+            for (int c = 0; c < cols; c++) {
+                String a = c < align.size() ? align.get(c) : "left";
+                html.append("<td style=\"text-align:").append(a).append("\">")
+                        .append(c < row.size() ? trimMarkdownSyntax(row.get(c)) : "")
+                        .append("</td>");
+            }
+            html.append("</tr>");
+            j++;
+        }
+        html.append("</tbody></table>");
+        return new LooseHtmlTableBlock(html.toString(), j - 1);
+    }
+
+    private static List<String> parseLooseHtmlTableAlignments(String separatorLine, int minColumns) {
+        List<String> cells = splitLooseHtmlTableRow(separatorLine);
+        if (cells.size() < 1 || cells.size() < minColumns) return null;
+        ArrayList<String> align = new ArrayList<>();
+        for (String c : cells) {
+            String s = normalizeTableSeparatorCell(stripHtmlTagsForMarkdownSyntax(c));
+            if (s == null || !s.matches(":?-{3,}:?")) return null;
+            boolean left = s.startsWith(":");
+            boolean right = s.endsWith(":");
+            align.add(left && right ? "center" : (right ? "right" : "left"));
+        }
+        return align;
+    }
+
+    private static List<String> splitLooseHtmlTableRow(String line) {
+        ArrayList<String> cells = new ArrayList<>();
+        if (line == null) return cells;
+        String s = stripLooseOuterTablePipes(trimMarkdownSyntax(line));
+        StringBuilder cell = new StringBuilder();
+        boolean inCode = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '&') {
+                int semi = s.indexOf(';', i + 1);
+                if (semi > i && semi - i <= 20) {
+                    String entity = s.substring(i, semi + 1);
+                    cell.append(entity);
+                    i = semi;
+                    continue;
+                }
+            }
+            if (c == '<') {
+                int tagEnd = findHtmlTagEnd(s, i + 1);
+                if (tagEnd > i) {
+                    String tag = s.substring(i, tagEnd + 1);
+                    String lower = tag.toLowerCase(Locale.ROOT);
+                    if (lower.matches("<code(?:\\s[^>]*)?>")) inCode = true;
+                    else if (lower.matches("</code\\s*>")) inCode = false;
+                    cell.append(tag);
+                    i = tagEnd;
+                    continue;
+                }
+            }
+            if (isTablePipeChar(c) && !inCode) {
+                cells.add(trimMarkdownSyntax(cell.toString()));
+                cell.setLength(0);
+            } else {
+                cell.append(c);
+            }
+        }
+        cells.add(trimMarkdownSyntax(cell.toString()));
+        return cells;
+    }
+
+    private static boolean hasLooseHtmlTablePipe(String line) {
+        if (line == null) return false;
+        String s = trimMarkdownSyntax(line);
+        boolean inCode = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '<') {
+                int tagEnd = findHtmlTagEnd(s, i + 1);
+                if (tagEnd > i) {
+                    String tag = s.substring(i, tagEnd + 1).toLowerCase(Locale.ROOT);
+                    if (tag.matches("<code(?:\\s[^>]*)?>")) inCode = true;
+                    else if (tag.matches("</code\\s*>")) inCode = false;
+                    i = tagEnd;
+                    continue;
+                }
+            }
+            if (isTablePipeChar(c) && !inCode) return true;
+        }
+        return false;
+    }
+
+    private static String stripLooseOuterTablePipes(String s) {
+        String out = s == null ? "" : s;
+        if (!out.isEmpty() && isTablePipeChar(out.charAt(0))) out = out.substring(1);
+        if (!out.isEmpty() && isTablePipeChar(out.charAt(out.length() - 1))) out = out.substring(0, out.length() - 1);
+        return out;
+    }
+
+    private static String stripHtmlTagsForMarkdownSyntax(String text) {
+        if (text == null || text.indexOf('<') < 0) return text == null ? "" : decodeBasicHtmlEntities(text);
+        StringBuilder out = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '<') {
+                int end = findHtmlTagEnd(text, i + 1);
+                if (end > i) {
+                    i = end;
+                    continue;
+                }
+            }
+            out.append(text.charAt(i));
+        }
+        return decodeBasicHtmlEntities(out.toString());
     }
 
     private static String sanitizeRenderedHtml(String html) {
@@ -596,6 +811,12 @@ public final class LegacyMarkdownPreviewModel {
 
     private static boolean isMarkdownBlankChar(char c) {
         return Character.isWhitespace(c) || c == '\u00a0' || c == '\u2007' || c == '\u202f' || c == '\ufeff' || c == '\u200b';
+    }
+
+    private static boolean containsTablePipeChar(String text) {
+        if (text == null) return false;
+        for (int i = 0; i < text.length(); i++) if (isTablePipeChar(text.charAt(i))) return true;
+        return false;
     }
 
     private static boolean isTablePipeChar(char c) {
@@ -2113,6 +2334,12 @@ public final class LegacyMarkdownPreviewModel {
         final String prefixHtml;
         final String body;
         PreprocessedMarkdown(String prefixHtml, String body) { this.prefixHtml = prefixHtml == null ? "" : prefixHtml; this.body = body == null ? "" : body; }
+    }
+
+    private static final class LooseHtmlTableBlock {
+        final String html;
+        final int endIndex;
+        LooseHtmlTableBlock(String html, int endIndex) { this.html = html == null ? "" : html; this.endIndex = endIndex; }
     }
 
     private static final class FrontMatterBlock {
