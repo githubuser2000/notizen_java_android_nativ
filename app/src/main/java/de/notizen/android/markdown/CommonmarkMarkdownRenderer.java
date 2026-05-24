@@ -35,6 +35,7 @@ public final class CommonmarkMarkdownRenderer {
     private static final Pattern EXPLICIT_HEADING_ID = Pattern.compile("(?is)<h([1-6])([^>]*)>(.*?)\\s+\\{#([A-Za-z0-9_.:-]+)\\}\\s*</h\\1>");
     private static final Pattern HEADING_ID_ATTR = Pattern.compile("(?is)\\s+id\\s*=\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s>]+)");
     private static final Pattern PARAGRAPH = Pattern.compile("(?is)<p>(.*?)</p>");
+    private static final Pattern HTML_BR = Pattern.compile("(?i)<br\\s*/?>");
     private static final List<Extension> EXTENSIONS = buildExtensions();
     private static final Parser PARSER = Parser.builder()
             .extensions(EXTENSIONS)
@@ -59,14 +60,27 @@ public final class CommonmarkMarkdownRenderer {
     }
 
     public static String healthCheck() {
-        String html = render("A &amp; B\n\n| A | B |\n|---|---|\n| `a|b` | A \\| B |\n\n- [x] Task\n\n~~strike~~\n\n> [!NOTE]\n> Hinweis\n\n## **Titel** {#anker}\n\nBegriff\n: **Definition**\n\nH~2~O x^2^ ==mark== $a+b$\n\n$$\nc=d\n$$");
+        String html = render("A &amp; B\n\n"
+                + "## Sinnvolle Badezusätze nur zur Linderung\n"
+                + "| Ziel | Badezusatz | Einschätzung |\n"
+                + "|---|---|---|\n"
+                + "| Juckreiz beruhigen | **Kühles/lauwarmes Bad**, ggf. mit **kolloidalem Hafermehl** | Kann gereizte, juckende Haut beruhigen; tötet keine Milben. |\n\n"
+                + "| A | B |\n|---|---|\n| `a|b` | A \\| B |\n\n"
+                + "｜ Vollbreite Pipe ｜ Unicode-Trennzeile ｜\n｜－－－｜－－－｜\n｜ eins ｜ zwei ｜\n\n"
+                + "- [x] Task\n\n~~strike~~\n\n> [!NOTE]\n> Hinweis\n\n## **Titel** {#anker}\n\n"
+                + "Begriff\n: **Definition**\n\nH~2~O x^2^ ==mark== $a+b$\n\n$$\nc=d\n$$");
         String lower = html.toLowerCase(Locale.ROOT);
         boolean strike = html.contains("<s>") || html.contains("<del>");
         boolean entityDecodedAndEscapedAgain = html.contains("A &amp; B");
+        String looseTable = postprocessExtendedHtml("<p>| Ziel | Badezusatz | Einschätzung |\n"
+                + "|---|---|---|\n"
+                + "| Juckreiz beruhigen | <strong>Bad</strong> | ok |</p>");
         if (!entityDecodedAndEscapedAgain
-                || !html.contains("<table")
+                || countOccurrences(lower, "<table") < 3
                 || !html.contains("<code>a|b</code>")
                 || !html.contains("A | B")
+                || !html.contains("Kühles/lauwarmes Bad")
+                || !html.contains("Juckreiz beruhigen")
                 || !lower.contains("checkbox")
                 || !strike
                 || !lower.contains("alert")
@@ -77,8 +91,10 @@ public final class CommonmarkMarkdownRenderer {
                 || !html.contains("x<sup>2</sup>")
                 || !html.contains("<mark>mark</mark>")
                 || !html.contains("<span class=\"math\">a+b</span>")
-                || !html.contains("<div class=\"math\">c=d</div>")) {
-            throw new IllegalStateException("CommonMark/GFM health check failed: " + html);
+                || !html.contains("<div class=\"math\">c=d</div>")
+                || !looseTable.contains("<table")
+                || !looseTable.contains("<strong>Bad</strong>")) {
+            throw new IllegalStateException("CommonMark/GFM health check failed: " + html + "\nloose=" + looseTable);
         }
         return ENGINE_NAME;
     }
@@ -115,21 +131,22 @@ public final class CommonmarkMarkdownRenderer {
      * does not regress them.
      */
     private static String preprocessExtendedMarkdown(String markdown) {
-        String[] lines = (markdown == null ? "" : markdown.replace("\r\n", "\n").replace('\r', '\n')).split("\n", -1);
-        StringBuilder out = new StringBuilder(markdown == null ? 32 : markdown.length() + 64);
+        String[] lines = normalizeMarkdownInput(markdown == null ? "" : markdown).split("\n", -1);
+        StringBuilder out = new StringBuilder(markdown == null ? 32 : markdown.length() + 96);
         boolean inFence = false;
         char fenceChar = 0;
         int fenceLength = 0;
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i] == null ? "" : lines[i];
+            String emit;
             Fence fence = parseFenceStart(line);
             if (!inFence && fence != null) {
                 inFence = true;
                 fenceChar = fence.ch;
                 fenceLength = fence.length;
-                out.append(line);
+                emit = line;
             } else if (inFence) {
-                out.append(line);
+                emit = line;
                 if (isFenceClose(line, fenceChar, fenceLength)) {
                     inFence = false;
                     fenceChar = 0;
@@ -138,33 +155,45 @@ public final class CommonmarkMarkdownRenderer {
             } else {
                 TableBlock table = parseTableAt(lines, i);
                 if (table != null) {
-                    out.append(table.html);
+                    emit = htmlBlockForMarkdown(table.html);
                     i = table.endIndex;
-                } else if (line.trim().equals("$$")) {
+                } else if (trimControl(line).equals("$$")) {
                     StringBuilder math = new StringBuilder();
-                int j = i + 1;
-                while (j < lines.length && !lines[j].trim().equals("$$")) {
-                    if (math.length() > 0) math.append('\n');
-                    math.append(lines[j]);
-                    j++;
-                }
-                if (j < lines.length) {
-                    out.append("<div class=\"math\">").append(escapeHtml(math.toString().trim())).append("</div>");
-                    i = j;
+                    int j = i + 1;
+                    while (j < lines.length && !trimControl(lines[j]).equals("$$")) {
+                        if (math.length() > 0) math.append('\n');
+                        math.append(lines[j]);
+                        j++;
+                    }
+                    if (j < lines.length) {
+                        emit = htmlBlockForMarkdown("<div class=\"math\">" + escapeHtml(math.toString().trim()) + "</div>");
+                        i = j;
+                    } else {
+                        emit = processInlineExtras(line);
+                    }
+                } else if (isIndentedCodeLine(line)) {
+                    emit = line;
                 } else {
-                    out.append(processInlineExtras(line));
+                    emit = processInlineExtras(line);
                 }
-            } else if (isIndentedCodeLine(line)) {
-                out.append(line);
-            } else {
-                out.append(processInlineExtras(line));
             }
-            }
+            out.append(emit);
             if (i < lines.length - 1) out.append('\n');
         }
         return out.toString();
     }
 
+    private static String htmlBlockForMarkdown(String html) {
+        return "\n" + (html == null ? "" : html) + "\n";
+    }
+
+    private static String normalizeMarkdownInput(String text) {
+        if (text == null || text.isEmpty()) return "";
+        String out = text.replace("\r\n", "\n").replace('\r', '\n');
+        out = out.replace('\u2028', '\n').replace('\u2029', '\n').replace('\u0085', '\n');
+        out = out.replace('\u00a0', ' ').replace('\u2007', ' ').replace('\u202f', ' ');
+        return out;
+    }
 
     private static TableBlock parseTableAt(String[] lines, int index) {
         if (lines == null || index < 0 || index + 1 >= lines.length) return null;
@@ -214,9 +243,7 @@ public final class CommonmarkMarkdownRenderer {
     private static List<String> splitTableRow(String line) {
         ArrayList<String> cells = new ArrayList<>();
         if (line == null) return cells;
-        String s = line.trim();
-        if (s.startsWith("|")) s = s.substring(1);
-        if (s.endsWith("|")) s = s.substring(0, s.length() - 1);
+        String s = stripOuterTablePipes(trimTableSyntax(line));
         StringBuilder cell = new StringBuilder();
         boolean escape = false;
         int activeCodeLen = 0;
@@ -242,20 +269,20 @@ public final class CommonmarkMarkdownRenderer {
                 i = j - 1;
                 continue;
             }
-            if (c == '|' && activeCodeLen == 0) {
-                cells.add(cell.toString().trim());
+            if (isTablePipeChar(c) && activeCodeLen == 0) {
+                cells.add(trimTableSyntax(cell.toString()));
                 cell.setLength(0);
             } else {
                 cell.append(c);
             }
         }
-        cells.add(cell.toString().trim());
+        cells.add(trimTableSyntax(cell.toString()));
         return cells;
     }
 
     private static boolean hasUnescapedTablePipe(String line) {
         if (line == null) return false;
-        String s = line.trim();
+        String s = trimTableSyntax(line);
         boolean escape = false;
         int activeCodeLen = 0;
         for (int i = 0; i < s.length(); i++) {
@@ -277,7 +304,7 @@ public final class CommonmarkMarkdownRenderer {
                 i = j - 1;
                 continue;
             }
-            if (c == '|' && activeCodeLen == 0) return true;
+            if (isTablePipeChar(c) && activeCodeLen == 0) return true;
         }
         return false;
     }
@@ -287,17 +314,13 @@ public final class CommonmarkMarkdownRenderer {
         if (cells.size() < 1 || cells.size() < minColumns) return null;
         ArrayList<String> align = new ArrayList<>();
         for (String c : cells) {
-            String s = c == null ? "" : c.trim();
-            if (!s.matches(":?-{3,}:?")) return null;
+            String s = normalizeTableSeparatorCell(c);
+            if (s == null || !s.matches(":?-{3,}:?")) return null;
             boolean left = s.startsWith(":");
             boolean right = s.endsWith(":");
             align.add(left && right ? "center" : (right ? "right" : "left"));
         }
         return align;
-    }
-
-    private static boolean isBlank(String s) {
-        return s == null || s.trim().isEmpty();
     }
 
     private static String processInlineExtras(String text) {
@@ -378,6 +401,7 @@ public final class CommonmarkMarkdownRenderer {
 
     private static String postprocessExtendedHtml(String html) {
         String out = applyExplicitHeadingIds(html == null ? "" : html);
+        out = convertLooseTableParagraphs(out);
         out = convertDefinitionListParagraphs(out);
         return out;
     }
@@ -396,6 +420,168 @@ public final class CommonmarkMarkdownRenderer {
         }
         m.appendTail(sb);
         return sb.toString();
+    }
+
+    private static String convertLooseTableParagraphs(String html) {
+        Matcher m = PARAGRAPH.matcher(html == null ? "" : html);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String body = m.group(1) == null ? "" : m.group(1);
+            String replacement = tableHtmlFromLooseParagraphBody(body);
+            if (replacement == null) replacement = m.group(0);
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    private static String tableHtmlFromLooseParagraphBody(String body) {
+        if (body == null || !containsTablePipeChar(body)) return null;
+        String normalized = normalizeHtmlParagraphBreaks(body);
+        String[] lines = normalized.split("\n", -1);
+        if (lines.length < 2) return null;
+
+        StringBuilder out = new StringBuilder(body.length() + 64);
+        ArrayList<String> paragraphLines = new ArrayList<>();
+        boolean changed = false;
+        int i = 0;
+        while (i < lines.length) {
+            RenderedTableBlock table = parseRenderedTableAt(lines, i);
+            if (table != null) {
+                appendLooseParagraph(out, paragraphLines);
+                paragraphLines.clear();
+                out.append(table.html);
+                changed = true;
+                i = table.endIndex + 1;
+                continue;
+            }
+            if (isBlank(lines[i])) {
+                appendLooseParagraph(out, paragraphLines);
+                paragraphLines.clear();
+            } else {
+                paragraphLines.add(lines[i]);
+            }
+            i++;
+        }
+        appendLooseParagraph(out, paragraphLines);
+        return changed ? out.toString() : null;
+    }
+
+    private static String normalizeHtmlParagraphBreaks(String body) {
+        String out = HTML_BR.matcher(body == null ? "" : body).replaceAll("\n");
+        return normalizeMarkdownInput(out);
+    }
+
+    private static void appendLooseParagraph(StringBuilder out, List<String> lines) {
+        if (lines == null || lines.isEmpty()) return;
+        out.append("<p>");
+        for (int i = 0; i < lines.size(); i++) {
+            if (i > 0) out.append("<br>\n");
+            out.append(lines.get(i));
+        }
+        out.append("</p>");
+    }
+
+    private static RenderedTableBlock parseRenderedTableAt(String[] lines, int index) {
+        if (lines == null || index < 0 || index + 1 >= lines.length) return null;
+        String headerLine = lines[index] == null ? "" : lines[index];
+        List<String> header = splitRenderedTableRow(headerLine);
+        if (header.size() < 1 || !hasRenderedTablePipe(headerLine)) return null;
+        List<String> align = parseRenderedTableAlignments(lines[index + 1], header.size());
+        if (align == null) return null;
+
+        int cols = Math.max(header.size(), align.size());
+        StringBuilder html = new StringBuilder();
+        html.append("<table><thead><tr>");
+        for (int c = 0; c < cols; c++) {
+            String a = c < align.size() ? align.get(c) : "left";
+            html.append("<th style=\"text-align:").append(a).append("\">")
+                    .append(c < header.size() ? trimTableSyntax(header.get(c)) : "")
+                    .append("</th>");
+        }
+        html.append("</tr></thead><tbody>");
+        int j = index + 2;
+        while (j < lines.length && !isBlank(lines[j]) && hasRenderedTablePipe(lines[j])) {
+            if (parseRenderedTableAlignments(lines[j], cols) != null) break;
+            List<String> row = splitRenderedTableRow(lines[j]);
+            html.append("<tr>");
+            for (int c = 0; c < cols; c++) {
+                String a = c < align.size() ? align.get(c) : "left";
+                html.append("<td style=\"text-align:").append(a).append("\">")
+                        .append(c < row.size() ? trimTableSyntax(row.get(c)) : "")
+                        .append("</td>");
+            }
+            html.append("</tr>");
+            j++;
+        }
+        html.append("</tbody></table>");
+        return new RenderedTableBlock(html.toString(), j - 1);
+    }
+
+    private static List<String> splitRenderedTableRow(String line) {
+        ArrayList<String> cells = new ArrayList<>();
+        if (line == null) return cells;
+        String s = stripOuterTablePipes(trimTableSyntax(line));
+        StringBuilder cell = new StringBuilder();
+        boolean inCode = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '<') {
+                int tagEnd = findHtmlTagEnd(s, i + 1);
+                if (tagEnd > i) {
+                    String tag = s.substring(i, tagEnd + 1);
+                    String lowerTag = tag.toLowerCase(Locale.ROOT);
+                    if (lowerTag.matches("<code(?:\\s[^>]*)?>")) inCode = true;
+                    else if (lowerTag.matches("</code\\s*>")) inCode = false;
+                    cell.append(tag);
+                    i = tagEnd;
+                    continue;
+                }
+            }
+            if (isTablePipeChar(c) && !inCode) {
+                cells.add(trimTableSyntax(cell.toString()));
+                cell.setLength(0);
+            } else {
+                cell.append(c);
+            }
+        }
+        cells.add(trimTableSyntax(cell.toString()));
+        return cells;
+    }
+
+    private static boolean hasRenderedTablePipe(String line) {
+        if (line == null) return false;
+        String s = trimTableSyntax(line);
+        boolean inCode = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '<') {
+                int tagEnd = findHtmlTagEnd(s, i + 1);
+                if (tagEnd > i) {
+                    String tag = s.substring(i, tagEnd + 1).toLowerCase(Locale.ROOT);
+                    if (tag.matches("<code(?:\\s[^>]*)?>")) inCode = true;
+                    else if (tag.matches("</code\\s*>")) inCode = false;
+                    i = tagEnd;
+                    continue;
+                }
+            }
+            if (isTablePipeChar(c) && !inCode) return true;
+        }
+        return false;
+    }
+
+    private static List<String> parseRenderedTableAlignments(String separatorLine, int minColumns) {
+        List<String> cells = splitRenderedTableRow(separatorLine);
+        if (cells.size() < 1 || cells.size() < minColumns) return null;
+        ArrayList<String> align = new ArrayList<>();
+        for (String c : cells) {
+            String s = normalizeTableSeparatorCell(c);
+            if (s == null || !s.matches(":?-{3,}:?")) return null;
+            boolean left = s.startsWith(":");
+            boolean right = s.endsWith(":");
+            align.add(left && right ? "center" : (right ? "right" : "left"));
+        }
+        return align;
     }
 
     private static String convertDefinitionListParagraphs(String html) {
@@ -549,10 +735,108 @@ public final class CommonmarkMarkdownRenderer {
         while (j < line.length() && line.charAt(j) == fenceChar) j++;
         if (j - i < fenceLength) return false;
         while (j < line.length()) {
-            if (!Character.isWhitespace(line.charAt(j))) return false;
+            if (!isBlankChar(line.charAt(j))) return false;
             j++;
         }
         return true;
+    }
+
+    private static boolean isBlank(String s) {
+        if (s == null || s.isEmpty()) return true;
+        for (int i = 0; i < s.length(); i++) if (!isBlankChar(s.charAt(i))) return false;
+        return true;
+    }
+
+    private static String trimControl(String s) {
+        return trimTableSyntax(s == null ? "" : s);
+    }
+
+    private static String trimTableSyntax(String s) {
+        if (s == null || s.isEmpty()) return "";
+        int start = 0;
+        int end = s.length();
+        while (start < end && isBlankChar(s.charAt(start))) start++;
+        while (end > start && isBlankChar(s.charAt(end - 1))) end--;
+        return s.substring(start, end);
+    }
+
+    private static String stripOuterTablePipes(String s) {
+        String out = s == null ? "" : s;
+        if (!out.isEmpty() && isTablePipeChar(out.charAt(0))) out = out.substring(1);
+        if (!out.isEmpty() && isTablePipeChar(out.charAt(out.length() - 1))) out = out.substring(0, out.length() - 1);
+        return out;
+    }
+
+    private static String normalizeTableSeparatorCell(String cell) {
+        if (cell == null) return null;
+        String s = stripHtmlTags(cell);
+        StringBuilder out = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (isTableColonChar(c)) out.append(':');
+            else if (isTableDashChar(c)) out.append('-');
+            else if (isBlankChar(c)) {
+                // Ignore spacing around separator markers.
+            } else {
+                return null;
+            }
+        }
+        return out.toString();
+    }
+
+    private static String stripHtmlTags(String text) {
+        if (text == null || text.indexOf('<') < 0) return text == null ? "" : text;
+        StringBuilder out = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '<') {
+                int end = findHtmlTagEnd(text, i + 1);
+                if (end > i) {
+                    i = end;
+                    continue;
+                }
+            }
+            out.append(text.charAt(i));
+        }
+        return out.toString();
+    }
+
+    private static boolean containsTablePipeChar(String text) {
+        if (text == null) return false;
+        for (int i = 0; i < text.length(); i++) if (isTablePipeChar(text.charAt(i))) return true;
+        return false;
+    }
+
+    private static boolean isBlankChar(char c) {
+        return Character.isWhitespace(c) || c == '\u00a0' || c == '\u2007' || c == '\u202f' || c == '\ufeff' || c == '\u200b';
+    }
+
+    private static boolean isTablePipeChar(char c) {
+        return c == '|'
+                || c == '\uff5c' // fullwidth vertical line
+                || c == '\uffe8' // halfwidth forms light vertical
+                || c == '\u2223' // divides
+                || c == '\u23d0' // vertical line extension
+                || c == '\u2758' // light vertical bar
+                || c == '\u2502' // box drawings light vertical
+                || c == '\u01c0'; // latin letter dental click, often pasted as a pipe lookalike
+    }
+
+    private static boolean isTableDashChar(char c) {
+        return c == '-'
+                || c == '\u2010'
+                || c == '\u2011'
+                || c == '\u2012'
+                || c == '\u2013'
+                || c == '\u2014'
+                || c == '\u2015'
+                || c == '\u2212'
+                || c == '\ufe58'
+                || c == '\ufe63'
+                || c == '\uff0d';
+    }
+
+    private static boolean isTableColonChar(char c) {
+        return c == ':' || c == '\uff1a';
     }
 
     private static String escapeHtml(String text) {
@@ -576,6 +860,17 @@ public final class CommonmarkMarkdownRenderer {
         return escapeHtml(text).replace("\n", " ").replace("\r", " ");
     }
 
+    private static int countOccurrences(String haystack, String needle) {
+        if (haystack == null || needle == null || needle.isEmpty()) return 0;
+        int count = 0;
+        int i = 0;
+        while ((i = haystack.indexOf(needle, i)) >= 0) {
+            count++;
+            i += needle.length();
+        }
+        return count;
+    }
+
     private static final class Fence {
         final char ch;
         final int length;
@@ -586,5 +881,11 @@ public final class CommonmarkMarkdownRenderer {
         final String html;
         final int endIndex;
         TableBlock(String html, int endIndex) { this.html = html == null ? "" : html; this.endIndex = endIndex; }
+    }
+
+    private static final class RenderedTableBlock {
+        final String html;
+        final int endIndex;
+        RenderedTableBlock(String html, int endIndex) { this.html = html == null ? "" : html; this.endIndex = endIndex; }
     }
 }

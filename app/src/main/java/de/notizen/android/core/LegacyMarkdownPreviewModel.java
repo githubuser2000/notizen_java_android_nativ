@@ -59,6 +59,8 @@ public final class LegacyMarkdownPreviewModel {
     public static String cleanRawText(String text) {
         if (text == null || text.isEmpty()) return "";
         String out = text.replace("\r\n", "\n").replace('\r', '\n');
+        out = out.replace('\u2028', '\n').replace('\u2029', '\n').replace('\u0085', '\n');
+        out = out.replace('\u00a0', ' ').replace('\u2007', ' ').replace('\u202f', ' ');
         out = out.replace(RtfUtils.LEGACY_IMAGE_PLACEHOLDER, "");
         out = out.replace(RtfUtils.LEGACY_OBJECT_PLACEHOLDER, "");
         out = out.replace("[Bild]", "");
@@ -578,7 +580,67 @@ public final class LegacyMarkdownPreviewModel {
     }
 
     private static boolean isBlank(String s) {
-        return s == null || s.trim().isEmpty();
+        if (s == null || s.isEmpty()) return true;
+        for (int i = 0; i < s.length(); i++) if (!isMarkdownBlankChar(s.charAt(i))) return false;
+        return true;
+    }
+
+    private static String trimMarkdownSyntax(String s) {
+        if (s == null || s.isEmpty()) return "";
+        int start = 0;
+        int end = s.length();
+        while (start < end && isMarkdownBlankChar(s.charAt(start))) start++;
+        while (end > start && isMarkdownBlankChar(s.charAt(end - 1))) end--;
+        return s.substring(start, end);
+    }
+
+    private static boolean isMarkdownBlankChar(char c) {
+        return Character.isWhitespace(c) || c == '\u00a0' || c == '\u2007' || c == '\u202f' || c == '\ufeff' || c == '\u200b';
+    }
+
+    private static boolean isTablePipeChar(char c) {
+        return c == '|'
+                || c == '\uff5c'
+                || c == '\uffe8'
+                || c == '\u2223'
+                || c == '\u23d0'
+                || c == '\u2758'
+                || c == '\u2502'
+                || c == '\u01c0';
+    }
+
+    private static boolean isTableDashChar(char c) {
+        return c == '-'
+                || c == '\u2010'
+                || c == '\u2011'
+                || c == '\u2012'
+                || c == '\u2013'
+                || c == '\u2014'
+                || c == '\u2015'
+                || c == '\u2212'
+                || c == '\ufe58'
+                || c == '\ufe63'
+                || c == '\uff0d';
+    }
+
+    private static boolean isTableColonChar(char c) {
+        return c == ':' || c == '\uff1a';
+    }
+
+    private static String normalizeTableSeparatorCell(String cell) {
+        if (cell == null) return null;
+        StringBuilder out = new StringBuilder(cell.length());
+        for (int i = 0; i < cell.length(); i++) {
+            char c = cell.charAt(i);
+            if (isTableColonChar(c)) out.append(':');
+            else if (isTableDashChar(c)) out.append('-');
+            else if (isMarkdownBlankChar(c)) {
+                // ignore separator spacing
+            } else {
+                return null;
+            }
+        }
+        return out.toString();
     }
 
     private static int leadingSpaces(String s) {
@@ -724,9 +786,9 @@ public final class LegacyMarkdownPreviewModel {
     private static List<String> splitTableRow(String line) {
         ArrayList<String> cells = new ArrayList<>();
         if (line == null) return cells;
-        String s = line.trim();
-        if (s.startsWith("|")) s = s.substring(1);
-        if (s.endsWith("|")) s = s.substring(0, s.length() - 1);
+        String s = trimMarkdownSyntax(line);
+        if (!s.isEmpty() && isTablePipeChar(s.charAt(0))) s = s.substring(1);
+        if (!s.isEmpty() && isTablePipeChar(s.charAt(s.length() - 1))) s = s.substring(0, s.length() - 1);
         StringBuilder cell = new StringBuilder();
         boolean escape = false;
         char codeFence = 0;
@@ -759,21 +821,21 @@ public final class LegacyMarkdownPreviewModel {
                 i = j - 1;
                 continue;
             }
-            if (c == '|' && activeCodeLen == 0) {
-                cells.add(cell.toString().trim());
+            if (isTablePipeChar(c) && activeCodeLen == 0) {
+                cells.add(trimMarkdownSyntax(cell.toString()));
                 cell.setLength(0);
             } else {
                 cell.append(c);
             }
         }
-        cells.add(cell.toString().trim());
+        cells.add(trimMarkdownSyntax(cell.toString()));
         return cells;
     }
 
 
     private static boolean hasUnescapedTablePipe(String line) {
         if (line == null) return false;
-        String s = line.trim();
+        String s = trimMarkdownSyntax(line);
         boolean escape = false;
         int activeCodeLen = 0;
         for (int i = 0; i < s.length(); i++) {
@@ -795,7 +857,7 @@ public final class LegacyMarkdownPreviewModel {
                 i = j - 1;
                 continue;
             }
-            if (c == '|' && activeCodeLen == 0) return true;
+            if (isTablePipeChar(c) && activeCodeLen == 0) return true;
         }
         return false;
     }
@@ -805,8 +867,8 @@ public final class LegacyMarkdownPreviewModel {
         if (cells.size() < 1 || cells.size() < minColumns) return null;
         ArrayList<String> align = new ArrayList<>();
         for (String c : cells) {
-            String s = c == null ? "" : c.trim();
-            if (!s.matches(":?-{3,}:?")) return null;
+            String s = normalizeTableSeparatorCell(c);
+            if (s == null || !s.matches(":?-{3,}:?")) return null;
             boolean left = s.startsWith(":");
             boolean right = s.endsWith(":");
             align.add(left && right ? "center" : (right ? "right" : "left"));

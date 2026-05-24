@@ -2464,6 +2464,23 @@ public final class TestCore {
             throw new AssertionError("markdown extended one-column table failed: " + oneColumnTableHtml);
         }
 
+        String screenshotTable = "## Sinnvolle Badezusätze nur zur Linderung\n"
+                + "| Ziel | Badezusatz | Einschätzung |\n"
+                + "|---|---|---|\n"
+                + "| Juckreiz beruhigen | **Kühles/lauwarmes Bad**, ggf. mit **kolloidalem Hafermehl** | Kann gereizte Haut beruhigen. |";
+        String screenshotTableHtml = LegacyMarkdownPreviewModel.toHtmlDocument(screenshotTable);
+        if (!screenshotTableHtml.contains("<table>")
+                || !screenshotTableHtml.contains("Juckreiz beruhigen")
+                || !screenshotTableHtml.contains("<strong>Kühles/lauwarmes Bad</strong>")) {
+            throw new AssertionError("markdown screenshot-style table failed: " + screenshotTableHtml);
+        }
+
+        String unicodeTable = "｜ Ziel ｜ Wert ｜\n｜－－－｜－－－｜\n｜ eins ｜ zwei ｜";
+        String unicodeTableHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(unicodeTable);
+        if (!unicodeTableHtml.contains("<table>") || !unicodeTableHtml.contains(">eins</td>")) {
+            throw new AssertionError("markdown unicode pipe/dash table failed: " + unicodeTableHtml);
+        }
+
         String nestedEmphasis = "**strong *em*** und *em **strong***";
         String nestedEmphasisHtml = LegacyMarkdownPreviewModel.markdownToHtmlFragment(nestedEmphasis);
         if (!nestedEmphasisHtml.contains("<strong>strong <em>em</em></strong>")
@@ -2625,6 +2642,9 @@ public final class TestCore {
                     || !bridgeText.contains("definitionListHtmlFromParagraphBody")
                     || !bridgeText.contains("parseTableAt")
                     || !bridgeText.contains("splitTableRow")
+                    || !bridgeText.contains("convertLooseTableParagraphs")
+                    || !bridgeText.contains("isTablePipeChar")
+                    || !bridgeText.contains("Sinnvolle Badezusätze")
                     || !bridgeText.contains("H~2~O")
                     || !bridgeText.contains("commonmark-java 0.28.0/GFM")) {
                 throw new AssertionError("markdown CommonMark bridge missing direct renderer wiring, Notizen extras, or smoke test");
