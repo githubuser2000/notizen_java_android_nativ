@@ -2588,12 +2588,20 @@ public final class TestCore {
         if (unsafeDoc.contains("href=\"javascript:") || unsafeDoc.contains("<script>")) {
             throw new AssertionError("markdown extended HTML document sanitizer failed: " + unsafeDoc);
         }
+        if (!unsafeDoc.contains("Notizen Markdown renderer:")) {
+            throw new AssertionError("markdown renderer diagnostic comment missing: " + unsafeDoc);
+        }
+        if (!LegacyMarkdownPreviewModel.markdownRendererStatus().contains("Legacy-Fallback")) {
+            throw new AssertionError("markdown renderer fallback status missing in core test: " + LegacyMarkdownPreviewModel.markdownRendererStatus());
+        }
 
         File gradle = new File("app/build.gradle");
         if (!gradle.isFile()) gradle = new File("../app/build.gradle");
         if (gradle.isFile()) {
             String build = readUtf8File(gradle);
             if (!build.contains("org.commonmark:commonmark:0.28.0")
+                    || !build.contains("org.commonmark:commonmark-ext-autolink:0.28.0")
+                    || !build.contains("org.nibor.autolink:autolink:0.12.0")
                     || !build.contains("commonmark-ext-gfm-tables")
                     || !build.contains("commonmark-ext-task-list-items")
                     || !build.contains("commonmark-ext-footnotes")
@@ -2602,13 +2610,30 @@ public final class TestCore {
             }
         }
 
+        File bridge = new File("app/src/main/java/de/notizen/android/markdown/CommonmarkMarkdownRenderer.java");
+        if (!bridge.isFile()) bridge = new File("../app/src/main/java/de/notizen/android/markdown/CommonmarkMarkdownRenderer.java");
+        if (bridge.isFile()) {
+            String bridgeText = readUtf8File(bridge);
+            if (!bridgeText.contains("AutolinkExtension.create()")
+                    || !bridgeText.contains("AlertsExtension.create()")
+                    || !bridgeText.contains("TaskListItemsExtension.create()")
+                    || !bridgeText.contains("engineName()")
+                    || !bridgeText.contains("commonmark-java 0.28.0/GFM")) {
+                throw new AssertionError("markdown CommonMark bridge missing direct renderer wiring");
+            }
+        }
+
         File termuxBuild = new File("tools/notizen-build-apk-termux.sh");
         if (!termuxBuild.isFile()) termuxBuild = new File("../tools/notizen-build-apk-termux.sh");
         if (termuxBuild.isFile()) {
             String script = readUtf8File(termuxBuild);
             if (!script.contains("COMMONMARK_VERSION=\"${COMMONMARK_VERSION:-0.28.0}\"")
+                    || !script.contains("AUTOLINK_VERSION=\"${AUTOLINK_VERSION:-0.12.0}\"")
+                    || !script.contains("org.nibor.autolink:autolink:$AUTOLINK_VERSION")
                     || !script.contains("commonmark-ext-gfm-alerts")
                     || !script.contains("COMMONMARK_JARS")
+                    || !script.contains("CommonmarkMarkdownRenderer.java")
+                    || !script.contains("classes*.dex")
                     || !script.contains("PROGRAM_FILES+=(\"${COMMONMARK_JARS[@]}\")")) {
                 throw new AssertionError("markdown extended Termux/manual CommonMark packaging missing");
             }

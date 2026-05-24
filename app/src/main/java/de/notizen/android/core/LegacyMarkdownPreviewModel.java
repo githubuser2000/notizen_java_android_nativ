@@ -45,6 +45,10 @@ public final class LegacyMarkdownPreviewModel {
     private static final String HARD_BREAK = "\u0000NOTIZEN_MD_BR\u0000";
     private static final Set<String> ALLOWED_HTML_ELEMENTS = allowedHtmlElements();
 
+    private static final String COMMONMARK_BRIDGE_CLASS = "de.notizen.android.markdown.CommonmarkMarkdownRenderer";
+    private static volatile String lastRendererName = "Legacy-Fallback";
+    private static volatile String lastRendererDetail = "noch nicht geprüft";
+
     private LegacyMarkdownPreviewModel() {}
 
     public static String rawMarkdownTextFromRtf(String rtf) {
@@ -124,7 +128,14 @@ public final class LegacyMarkdownPreviewModel {
         String text = cleanRawText(rawText);
         int lines = text.isEmpty() ? 0 : text.split("\n", -1).length;
         int chars = text.length();
-        return "Markdown-Vorschau · " + lines + " Zeilen · " + chars + " Zeichen";
+        String renderer = markdownRendererStatus();
+        return "Markdown-Vorschau · " + lines + " Zeilen · " + chars + " Zeichen · Renderer: " + renderer;
+    }
+
+    public static String markdownRendererStatus() {
+        String name = lastRendererName == null ? "Legacy-Fallback" : lastRendererName;
+        String detail = lastRendererDetail == null ? "" : lastRendererDetail;
+        return detail.isEmpty() ? name : name + " (" + detail + ")";
     }
 
 
@@ -172,6 +183,7 @@ public final class LegacyMarkdownPreviewModel {
         String fragment = commonmarkToHtmlFragmentIfAvailable(preprocessed.body);
         if (fragment == null) fragment = markdownToHtmlFragment(preprocessed.body, false);
         fragment = preprocessed.prefixHtml + fragment;
+        String rendererComment = "<!-- Notizen Markdown renderer: " + htmlCommentText(markdownRendererStatus()) + " -->";
         return "<!doctype html><html><head><meta charset=\"utf-8\">"
                 + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
                 + "<style>"
@@ -190,7 +202,7 @@ public final class LegacyMarkdownPreviewModel {
                 + ".md-alert,.markdown-alert{border-left-width:5px;}.md-alert-title,.markdown-alert-title{font-weight:700;margin-bottom:.25em;}.md-alert-note,.markdown-alert-note{border-left-color:#3b82f6;}.md-alert-tip,.markdown-alert-tip{border-left-color:#16a34a;}.md-alert-important,.markdown-alert-important{border-left-color:#7c3aed;}.md-alert-warning,.markdown-alert-warning{border-left-color:#d97706;}.md-alert-caution,.markdown-alert-caution{border-left-color:#dc2626;}.math{font-family:serif;background:#f8fafc;border:1px solid #e5e7eb;border-radius:4px;padding:.04em .22em;}div.math{display:block;margin:.55em 0;padding:.45em .6em;overflow:auto;}"
                 + ".footnotes{border-top:1px solid #d8e0ea;margin-top:1em;padding-top:.4em;font-size:.92em;color:#374151;}.footnote-backref{margin-left:.35em;text-decoration:none;}"
                 + ".frontmatter{font-size:.9em;color:#4b5563;border-style:dashed;}"
-                + "</style></head><body>" + fragment + "</body></html>";
+                + "</style></head><body>" + rendererComment + fragment + "</body></html>";
     }
 
     public static String markdownToHtmlFragment(String rawText) {
@@ -217,7 +229,24 @@ public final class LegacyMarkdownPreviewModel {
      * the portable Java core unbuildable in minimal environments.
      */
     private static String commonmarkToHtmlFragmentIfAvailable(String rawText) {
-        if (Boolean.getBoolean("notizen.markdown.forceLegacyRenderer")) return null;
+        if (Boolean.getBoolean("notizen.markdown.forceLegacyRenderer")) {
+            lastRendererName = "Legacy-Fallback";
+            lastRendererDetail = "per System-Property erzwungen";
+            return null;
+        }
+
+        Throwable bridgeError = null;
+        try {
+            Class<?> bridgeClass = Class.forName(COMMONMARK_BRIDGE_CLASS);
+            String html = (String) bridgeClass.getMethod("render", String.class).invoke(null, rawText == null ? "" : rawText);
+            String engine = (String) bridgeClass.getMethod("engineName").invoke(null);
+            lastRendererName = engine == null || engine.isEmpty() ? "commonmark-java/GFM" : engine;
+            lastRendererDetail = "direkter Android-Bridge-Pfad";
+            return sanitizeRenderedHtml(html == null ? "" : html);
+        } catch (Throwable t) {
+            bridgeError = rootCause(t);
+        }
+
         try {
             ArrayList<Object> extensions = new ArrayList<>();
             addCommonmarkExtension(extensions, "org.commonmark.ext.autolink.AutolinkExtension");
@@ -245,10 +274,49 @@ public final class LegacyMarkdownPreviewModel {
             invokeFluent(rendererBuilder, "escapeHtml", Boolean.FALSE);
             Object renderer = rendererBuilder.getClass().getMethod("build").invoke(rendererBuilder);
             String html = (String) rendererClass.getMethod("render", nodeClass).invoke(renderer, document);
+            lastRendererName = "commonmark-java/GFM";
+            lastRendererDetail = "reflektiver Pfad, Extensions: " + extensions.size();
             return sanitizeRenderedHtml(html == null ? "" : html);
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            Throwable reflectiveError = rootCause(t);
+            lastRendererName = "Legacy-Fallback";
+            lastRendererDetail = commonmarkLoadFailureDetail(bridgeError, reflectiveError);
             return null;
         }
+    }
+
+    private static Throwable rootCause(Throwable t) {
+        Throwable current = t;
+        while (current != null) {
+            Throwable next = current.getCause();
+            if (next == null || next == current) return current;
+            current = next;
+        }
+        return t;
+    }
+
+    private static String commonmarkLoadFailureDetail(Throwable bridgeError, Throwable reflectiveError) {
+        String bridge = shortThrowable(bridgeError);
+        String reflective = shortThrowable(reflectiveError);
+        if (bridge.isEmpty() && reflective.isEmpty()) return "CommonMark nicht verfügbar";
+        if (bridge.equals(reflective) || reflective.isEmpty()) return bridge;
+        if (bridge.isEmpty()) return reflective;
+        return "Bridge: " + bridge + "; Reflection: " + reflective;
+    }
+
+    private static String shortThrowable(Throwable t) {
+        if (t == null) return "";
+        String name = t.getClass().getSimpleName();
+        String message = t.getMessage();
+        if (message == null || message.trim().isEmpty()) return name;
+        message = message.replace('\n', ' ').replace('\r', ' ').trim();
+        if (message.length() > 120) message = message.substring(0, 117) + "...";
+        return name + ": " + message;
+    }
+
+    private static String htmlCommentText(String text) {
+        if (text == null || text.isEmpty()) return "";
+        return text.replace("--", "- -").replace("<", "‹").replace(">", "›").replace("\n", " ").replace("\r", " ");
     }
 
     private static void addCommonmarkExtension(List<Object> extensions, String className) {

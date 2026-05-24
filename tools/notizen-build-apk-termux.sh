@@ -25,21 +25,23 @@ ZIP="${ZIP:-zip}"
 CURL="${CURL:-$(command -v curl || true)}"
 WGET="${WGET:-$(command -v wget || true)}"
 COMMONMARK_VERSION="${COMMONMARK_VERSION:-0.28.0}"
+AUTOLINK_VERSION="${AUTOLINK_VERSION:-0.12.0}"
 INCLUDE_COMMONMARK_DEPS="${INCLUDE_COMMONMARK_DEPS:-1}"
 COMMONMARK_REPO_URL="${COMMONMARK_REPO_URL:-https://repo1.maven.org/maven2}"
 COMMONMARK_DEPS_DIR="${COMMONMARK_DEPS_DIR:-$PROJECT_DIR/build/markdown-deps}"
-COMMONMARK_ARTIFACTS=(
-  commonmark
-  commonmark-ext-autolink
-  commonmark-ext-gfm-strikethrough
-  commonmark-ext-gfm-tables
-  commonmark-ext-gfm-alerts
-  commonmark-ext-footnotes
-  commonmark-ext-heading-anchor
-  commonmark-ext-ins
-  commonmark-ext-task-list-items
-  commonmark-ext-image-attributes
-  commonmark-ext-yaml-front-matter
+COMMONMARK_COORDS=(
+  "org.commonmark:commonmark:$COMMONMARK_VERSION"
+  "org.commonmark:commonmark-ext-autolink:$COMMONMARK_VERSION"
+  "org.nibor.autolink:autolink:$AUTOLINK_VERSION"
+  "org.commonmark:commonmark-ext-gfm-strikethrough:$COMMONMARK_VERSION"
+  "org.commonmark:commonmark-ext-gfm-tables:$COMMONMARK_VERSION"
+  "org.commonmark:commonmark-ext-gfm-alerts:$COMMONMARK_VERSION"
+  "org.commonmark:commonmark-ext-footnotes:$COMMONMARK_VERSION"
+  "org.commonmark:commonmark-ext-heading-anchor:$COMMONMARK_VERSION"
+  "org.commonmark:commonmark-ext-ins:$COMMONMARK_VERSION"
+  "org.commonmark:commonmark-ext-task-list-items:$COMMONMARK_VERSION"
+  "org.commonmark:commonmark-ext-image-attributes:$COMMONMARK_VERSION"
+  "org.commonmark:commonmark-ext-yaml-front-matter:$COMMONMARK_VERSION"
 )
 COMMONMARK_JARS=()
 JAVAC_LANG_ARGS=()
@@ -65,6 +67,13 @@ download_file() {
   fi
 }
 
+maven_path_for_coord() {
+  local group="$1"
+  local artifact="$2"
+  local version="$3"
+  printf '%s/%s/%s/%s-%s.jar' "${group//.//}" "$artifact" "$version" "$artifact" "$version"
+}
+
 ensure_commonmark_deps() {
   COMMONMARK_JARS=()
   if [ "$INCLUDE_COMMONMARK_DEPS" = "0" ]; then
@@ -72,14 +81,16 @@ ensure_commonmark_deps() {
     return
   fi
   mkdir -p "$COMMONMARK_DEPS_DIR"
-  local artifact jar url tmp
-  for artifact in "${COMMONMARK_ARTIFACTS[@]}"; do
-    jar="$COMMONMARK_DEPS_DIR/${artifact}-${COMMONMARK_VERSION}.jar"
+  local coord group artifact version path jar url tmp
+  for coord in "${COMMONMARK_COORDS[@]}"; do
+    IFS=':' read -r group artifact version <<< "$coord"
+    path="$(maven_path_for_coord "$group" "$artifact" "$version")"
+    jar="$COMMONMARK_DEPS_DIR/${artifact}-${version}.jar"
     if [ ! -s "$jar" ]; then
-      url="$COMMONMARK_REPO_URL/org/commonmark/${artifact}/${COMMONMARK_VERSION}/${artifact}-${COMMONMARK_VERSION}.jar"
+      url="$COMMONMARK_REPO_URL/$path"
       tmp="$jar.tmp"
       rm -f "$tmp"
-      printf '==> Lade Markdown-Abhängigkeit: %s\n' "$artifact"
+      printf '==> Lade Markdown-Abhängigkeit: %s:%s:%s\n' "$group" "$artifact" "$version"
       download_file "$url" "$tmp"
       mv "$tmp" "$jar"
     fi
@@ -185,6 +196,10 @@ printf '\n==> APK-Basis mit aapt2 linken\n'
 
 printf '\n==> Java nach .class kompilieren\n'
 find "$JAVA_SRC" "$BUILD_DIR/gen" -name '*.java' -print > "$BUILD_DIR/sources.txt"
+if [ "${#COMMONMARK_JARS[@]}" -eq 0 ]; then
+  grep -v '/de/notizen/android/markdown/CommonmarkMarkdownRenderer.java$' "$BUILD_DIR/sources.txt" > "$BUILD_DIR/sources.filtered.txt"
+  mv "$BUILD_DIR/sources.filtered.txt" "$BUILD_DIR/sources.txt"
+fi
 COMMONMARK_CP="$(join_by_colon "${COMMONMARK_JARS[@]}")"
 JAVAC_CP="$ANDROID_JAR:$BUILD_DIR/gen"
 if [ -n "$COMMONMARK_CP" ]; then JAVAC_CP="$JAVAC_CP:$COMMONMARK_CP"; fi
@@ -201,9 +216,9 @@ PROGRAM_FILES=("${CLASS_FILES[@]}")
 if [ "${#COMMONMARK_JARS[@]}" -gt 0 ]; then PROGRAM_FILES+=("${COMMONMARK_JARS[@]}"); fi
 "$D8" --lib "$ANDROID_JAR" --min-api "$MIN_SDK" --output "$BUILD_DIR/dex" "${PROGRAM_FILES[@]}"
 
-printf '\n==> classes.dex in APK einfügen\n'
+printf '\n==> DEX-Dateien in APK einfügen\n'
 cp "$UNALIGNED_APK" "$UNSIGNED_APK"
-( cd "$BUILD_DIR/dex" && "$ZIP" -q -u "$UNSIGNED_APK" classes.dex )
+( cd "$BUILD_DIR/dex" && "$ZIP" -q -u "$UNSIGNED_APK" classes*.dex )
 
 printf '\n==> zipalign\n'
 "$ZIPALIGN" -f 4 "$UNSIGNED_APK" "$ALIGNED_APK"
