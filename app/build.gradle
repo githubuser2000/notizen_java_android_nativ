@@ -10,8 +10,8 @@ android {
         applicationId 'de.notizen.android'
         minSdk 23
         targetSdk 34
-        versionCode 119
-        versionName '1.0.119-java-android-nativ-md-table-verified'
+        versionCode 120
+        versionName '1.0.120-java-android-nativ-loose-table'
     }
 
     compileOptions {

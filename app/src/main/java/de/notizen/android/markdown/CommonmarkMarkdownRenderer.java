@@ -31,7 +31,7 @@ import org.commonmark.renderer.html.HtmlRenderer;
  * dependencies.</p>
  */
 public final class CommonmarkMarkdownRenderer {
-    private static final String ENGINE_NAME = "commonmark-java 0.28.0/GFM + Notizen-Extras";
+    private static final String ENGINE_NAME = "commonmark-java 0.28.0/GFM + Notizen-Extras + lockere Tabellen";
     private static final Pattern EXPLICIT_HEADING_ID = Pattern.compile("(?is)<h([1-6])([^>]*)>(.*?)\\s+\\{#([A-Za-z0-9_.:-]+)\\}\\s*</h\\1>");
     private static final Pattern HEADING_ID_ATTR = Pattern.compile("(?is)\\s+id\\s*=\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s>]+)");
     private static final Pattern PARAGRAPH = Pattern.compile("(?is)<p>(.*?)</p>");
@@ -75,6 +75,13 @@ public final class CommonmarkMarkdownRenderer {
         String looseTable = postprocessExtendedHtml("<p>| Ziel | Badezusatz | Einschätzung |\n"
                 + "|---|---|---|\n"
                 + "| Juckreiz beruhigen | <strong>Bad</strong> | ok |</p>");
+        String loosePastedTable = render("## Sinnvolle Badezusätze nur zur Linderung\n\n"
+                + "|\n"
+                + "| Ziel | Badezusatz | Einschätzung |\n\n"
+                + "|---|---|---|\n\n"
+                + "| Juckreiz beruhigen | **Kühles/lauwarmes Bad**, ggf. mit **kolloidalem Hafermehl** | Kann gereizte Haut beruhigen. |\n\n"
+                + "| Trockene Haut | **Parfümfreier Badeöl** | Unterstützt die Hautbarriere. |\n\n"
+                + "| Akuter Juckreiz | **Calamin-Lotion** | Symptomatisch hilfreich. |\n");
         if (!entityDecodedAndEscapedAgain
                 || countOccurrences(lower, "<table") < 3
                 || !html.contains("<code>a|b</code>")
@@ -93,8 +100,12 @@ public final class CommonmarkMarkdownRenderer {
                 || !html.contains("<span class=\"math\">a+b</span>")
                 || !html.contains("<div class=\"math\">c=d</div>")
                 || !looseTable.contains("<table")
-                || !looseTable.contains("<strong>Bad</strong>")) {
-            throw new IllegalStateException("CommonMark/GFM health check failed: " + html + "\nloose=" + looseTable);
+                || !looseTable.contains("<strong>Bad</strong>")
+                || !loosePastedTable.contains("<table")
+                || !loosePastedTable.contains("Juckreiz beruhigen")
+                || !loosePastedTable.contains("<strong>Kühles/lauwarmes Bad</strong>")
+                || loosePastedTable.contains("<p>| Ziel")) {
+            throw new IllegalStateException("CommonMark/GFM health check failed: " + html + "\nloose=" + looseTable + "\npasted=" + loosePastedTable);
         }
         return ENGINE_NAME;
     }
@@ -196,11 +207,21 @@ public final class CommonmarkMarkdownRenderer {
     }
 
     private static TableBlock parseTableAt(String[] lines, int index) {
-        if (lines == null || index < 0 || index + 1 >= lines.length) return null;
-        String headerLine = lines[index] == null ? "" : lines[index];
-        List<String> header = splitTableRow(headerLine);
-        if (header.size() < 1 || !hasUnescapedTablePipe(headerLine)) return null;
-        List<String> align = parseTableAlignments(lines[index + 1], header.size());
+        if (lines == null || index < 0 || index >= lines.length) return null;
+
+        int headerIndex = index;
+        if (!isPlausibleTableHeaderLine(lines[headerIndex])) {
+            if (!isIgnorableTableFillerLine(lines[headerIndex])) return null;
+            while (headerIndex < lines.length && isIgnorableTableFillerLine(lines[headerIndex])) headerIndex++;
+            if (headerIndex >= lines.length || !isPlausibleTableHeaderLine(lines[headerIndex])) return null;
+        }
+
+        List<String> header = splitTableRow(lines[headerIndex]);
+        int separatorIndex = headerIndex + 1;
+        while (separatorIndex < lines.length && isIgnorableTableFillerLine(lines[separatorIndex])) separatorIndex++;
+        if (separatorIndex >= lines.length) return null;
+
+        List<String> align = parseTableAlignments(lines[separatorIndex], header.size());
         if (align == null) return null;
 
         int cols = Math.max(header.size(), align.size());
@@ -213,10 +234,24 @@ public final class CommonmarkMarkdownRenderer {
                     .append("</th>");
         }
         html.append("</tr></thead><tbody>");
-        int j = index + 2;
-        while (j < lines.length && !isBlank(lines[j]) && hasUnescapedTablePipe(lines[j])) {
-            if (parseTableAlignments(lines[j], cols) != null) break;
-            List<String> row = splitTableRow(lines[j]);
+
+        int j = separatorIndex + 1;
+        int endIndex = separatorIndex;
+        while (j < lines.length) {
+            String line = lines[j] == null ? "" : lines[j];
+            if (isIgnorableTableFillerLine(line)) {
+                int next = j + 1;
+                while (next < lines.length && isIgnorableTableFillerLine(lines[next])) next++;
+                if (next < lines.length && startsTableAt(lines, next)) break;
+                if (next < lines.length && isPlausibleTableBodyLine(lines[next], cols)) {
+                    j = next;
+                    continue;
+                }
+                break;
+            }
+            if (startsTableAt(lines, j)) break;
+            if (!isPlausibleTableBodyLine(line, cols)) break;
+            List<String> row = splitTableRow(line);
             html.append("<tr>");
             for (int c = 0; c < cols; c++) {
                 String a = c < align.size() ? align.get(c) : "left";
@@ -225,10 +260,51 @@ public final class CommonmarkMarkdownRenderer {
                         .append("</td>");
             }
             html.append("</tr>");
+            endIndex = j;
             j++;
         }
         html.append("</tbody></table>");
-        return new TableBlock(html.toString(), j - 1);
+        return new TableBlock(html.toString(), endIndex);
+    }
+
+    private static boolean startsTableAt(String[] lines, int index) {
+        if (lines == null || index < 0 || index >= lines.length) return false;
+        if (!isPlausibleTableHeaderLine(lines[index])) return false;
+        int separator = index + 1;
+        while (separator < lines.length && isIgnorableTableFillerLine(lines[separator])) separator++;
+        if (separator >= lines.length) return false;
+        return parseTableAlignments(lines[separator], splitTableRow(lines[index]).size()) != null;
+    }
+
+    private static boolean isPlausibleTableHeaderLine(String line) {
+        if (line == null || isIgnorableTableFillerLine(line) || !hasUnescapedTablePipe(line)) return false;
+        List<String> cells = splitTableRow(line);
+        if (cells.size() < 1) return false;
+        for (String cell : cells) if (!trimTableSyntax(cell).isEmpty()) return true;
+        return false;
+    }
+
+    private static boolean isPlausibleTableBodyLine(String line, int columns) {
+        if (line == null || isIgnorableTableFillerLine(line) || !hasUnescapedTablePipe(line)) return false;
+        if (parseTableAlignments(line, Math.max(1, columns)) != null) return false;
+        return true;
+    }
+
+    private static boolean isIgnorableTableFillerLine(String line) {
+        if (isBlank(line)) return true;
+        String s = trimTableSyntax(line);
+        if (s.isEmpty()) return true;
+        boolean sawPipe = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (isTablePipeChar(c)) sawPipe = true;
+            else if (isBlankChar(c)) {
+                // ignore spacing around lone pipe markers
+            } else {
+                return false;
+            }
+        }
+        return sawPipe;
     }
 
     private static String renderInlineMarkdownFragment(String raw) {

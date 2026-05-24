@@ -205,7 +205,7 @@ import de.notizen.android.core.TreeStats;
 
 public final class MainActivity extends Activity {
     private static final String APP_DISPLAY_NAME = "Notizen Java Android Nativ";
-    private static final String APP_VERSION_NAME = "1.0.119-java-android-nativ-md-table-verified";
+    private static final String APP_VERSION_NAME = "1.0.120-java-android-nativ-loose-table";
     private static final String RTF_IMAGE_CHAR = "\ufffc";
     private static final String NODE_TITLE_STYLE_ATTR = "androidTitleStyle";
     private static final String NODE_TITLE_FONT_ATTR = "androidTitleFont";

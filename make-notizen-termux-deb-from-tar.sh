@@ -70,8 +70,8 @@ fi
 
 echo "==> Projekt gefunden: $PROJECT"
 
-EXPECTED_MARKER="md-table-runtime-verify-v119"
-EXPECTED_VERSION_LINE='VERSION_CODE="${VERSION_CODE:-119}"'
+EXPECTED_MARKER="md-loose-table-runtime-verify-v120"
+EXPECTED_VERSION_LINE='VERSION_CODE="${VERSION_CODE:-120}"'
 if ! grep -Rqs "$EXPECTED_MARKER" "$PROJECT/app/src/main/java" "$PROJECT/tools" 2>/dev/null; then
   cat >&2 <<MSG
 
@@ -81,7 +81,7 @@ Dieses Archiv ist zu alt und enthält den aktuellen Markdown-Tabellen-Fix nicht:
 Erwarteter Marker: $EXPECTED_MARKER
 
 Du baust sonst wieder ein .deb aus altem Code. Nimm das neue Archiv
-notizen_java_android_nativ_markdown_table_pipefail_fixed_v119.tar.bz2
+notizen_java_android_nativ_markdown_loose_table_fixed_v120.tar.bz2
 oder spiele zuerst den Patch in das Archiv/Projekt ein.
 MSG
   exit 1
@@ -89,7 +89,7 @@ fi
 if [ ! -f "$PROJECT/tools/notizen-build-apk-termux.sh" ] || ! grep -Fq "$EXPECTED_VERSION_LINE" "$PROJECT/tools/notizen-build-apk-termux.sh"; then
   cat >&2 <<MSG
 
-Dieses Archiv enthält nicht den v119-Termux-Buildpfad.
+Dieses Archiv enthält nicht den v120-Termux-Buildpfad.
 Erwartet in tools/notizen-build-apk-termux.sh:
   $EXPECTED_VERSION_LINE
 
@@ -267,7 +267,7 @@ fi
 
 echo "Installiere APK: $APK"
 echo "Wichtig: Wenn der Android-Paketinstaller erscheint, dort Aktualisieren/Installieren bestätigen."
-echo "Erwarteter APK-Build: md-table-runtime-verify-v117 / NotizenJavaAndroidNativ-v117-debug.apk"
+echo "Erwarteter APK-Build: md-loose-table-runtime-verify-v120 / NotizenJavaAndroidNativ-v120-debug.apk"
 
 if command -v termux-open >/dev/null 2>&1; then
   termux-open "$APK"
@@ -375,7 +375,7 @@ fi
 
 echo "Installiere APK: $APK"
 echo "Wichtig: Wenn der Android-Paketinstaller erscheint, dort Aktualisieren/Installieren bestätigen."
-echo "Erwarteter APK-Build: md-table-runtime-verify-v117 / NotizenJavaAndroidNativ-v117-debug.apk"
+echo "Erwarteter APK-Build: md-loose-table-runtime-verify-v120 / NotizenJavaAndroidNativ-v120-debug.apk"
 
 if command -v termux-open >/dev/null 2>&1; then
   termux-open "$APK"

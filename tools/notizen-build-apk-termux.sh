@@ -11,8 +11,8 @@ PACKAGE="de.notizen.android"
 MIN_SDK="${MIN_SDK:-23}"
 TARGET_SDK="${TARGET_SDK:-34}"
 COMPILE_API="${COMPILE_API:-34}"
-VERSION_CODE="${VERSION_CODE:-119}"
-VERSION_NAME="${VERSION_NAME:-1.0.119-java-android-nativ-md-table-verified}"
+VERSION_CODE="${VERSION_CODE:-120}"
+VERSION_NAME="${VERSION_NAME:-1.0.120-java-android-nativ-loose-table}"
 ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
 ANDROID_JAR="${ANDROID_JAR:-$ANDROID_HOME/platforms/android-$COMPILE_API/android.jar}"
 AAPT2="${AAPT2:-$(command -v aapt2 || true)}"
@@ -202,7 +202,7 @@ verify_commonmark_dex_dir_payload() {
   for dex in "$BUILD_DIR/dex"/classes*.dex; do
     [ -f "$dex" ] || continue
     if grep -aF 'CommonmarkMarkdownRenderer' "$dex" >/dev/null; then found_bridge=1; fi
-    if grep -aF 'md-table-runtime-verify-v119' "$dex" >/dev/null; then found_marker=1; fi
+    if grep -aF 'md-loose-table-runtime-verify-v120' "$dex" >/dev/null; then found_marker=1; fi
   done
   if [ "$found_bridge" -ne 1 ]; then
     echo "D8-Ausgabe enthält keinen CommonmarkMarkdownRenderer. Diese APK würde in den Fallback gehen." >&2
@@ -210,11 +210,11 @@ verify_commonmark_dex_dir_payload() {
     exit 1
   fi
   if [ "$found_marker" -ne 1 ]; then
-    echo "D8-Ausgabe enthält nicht den aktuellen Markdown-Tabellen-Fix md-table-runtime-verify-v119." >&2
+    echo "D8-Ausgabe enthält nicht den aktuellen Markdown-Tabellen-Fix md-loose-table-runtime-verify-v120." >&2
     echo "DEX-Ordner: $BUILD_DIR/dex" >&2
     exit 1
   fi
-  echo "CommonMark DEX geprüft: CommonmarkMarkdownRenderer + md-table-runtime-verify-v119"
+  echo "CommonMark DEX geprüft: CommonmarkMarkdownRenderer + md-loose-table-runtime-verify-v120"
 }
 
 verify_commonmark_apk_payload() {
@@ -234,14 +234,14 @@ verify_commonmark_apk_payload() {
     "$JAR" tf "$apk" | grep -E '^classes([0-9]+)?\.dex$' >&2 || true
     exit 1
   fi
-  if ! apk_dex_contains_string "$apk" 'md-table-runtime-verify-v119'; then
-    echo "APK enthält nicht den aktuellen Markdown-Tabellen-Fix md-table-runtime-verify-v119." >&2
+  if ! apk_dex_contains_string "$apk" 'md-loose-table-runtime-verify-v120'; then
+    echo "APK enthält nicht den aktuellen Markdown-Tabellen-Fix md-loose-table-runtime-verify-v120." >&2
     echo "APK: $apk" >&2
     echo "DEX-Einträge in der APK:" >&2
     "$JAR" tf "$apk" | grep -E '^classes([0-9]+)?\.dex$' >&2 || true
     exit 1
   fi
-  echo "CommonMark APK-DEX geprüft: CommonmarkMarkdownRenderer + md-table-runtime-verify-v119"
+  echo "CommonMark APK-DEX geprüft: CommonmarkMarkdownRenderer + md-loose-table-runtime-verify-v120"
 }
 
 run_commonmark_jvm_smoke_test() {
@@ -361,6 +361,7 @@ COMMONMARK_CP="$(join_by_colon "${COMMONMARK_JARS[@]}")"
 JAVAC_CP="$ANDROID_JAR:$BUILD_DIR/gen"
 if [ -n "$COMMONMARK_CP" ]; then JAVAC_CP="$JAVAC_CP:$COMMONMARK_CP"; fi
 "$JAVAC" "${JAVAC_LANG_ARGS[@]}" \
+  -encoding UTF-8 \
   -classpath "$JAVAC_CP" \
   -sourcepath "$JAVA_SRC:$BUILD_DIR/gen" \
   -d "$BUILD_DIR/classes" \

@@ -44,7 +44,8 @@ public final class LegacyMarkdownPreviewModel {
     private static final Pattern HTML_INLINE_HINT = Pattern.compile("(?i)</?(?:a|abbr|br|code|kbd|mark|span|sub|sup|u|ins|del|s|small|strong|em|b|i|img)\\b[^>]*>");
     private static final Pattern LOOSE_HTML_PARAGRAPH = Pattern.compile("(?is)<p(?:\\s[^>]*)?>(.*?)</p>");
     private static final Pattern LOOSE_HTML_BREAK = Pattern.compile("(?i)<br\\s*/?>");
-    private static final String MARKDOWN_PREVIEW_BUILD_ID = "md-table-runtime-verify-v119";
+    private static final Pattern LOOSE_HTML_PARAGRAPH_RUN = Pattern.compile("(?is)(?:\\s*<p(?:\\s[^>]*)?>.*?</p>\\s*){2,}");
+    private static final String MARKDOWN_PREVIEW_BUILD_ID = "md-loose-table-runtime-verify-v120";
     private static final String HARD_BREAK = "\u0000NOTIZEN_MD_BR\u0000";
     private static final Set<String> ALLOWED_HTML_ELEMENTS = allowedHtmlElements();
 
@@ -121,10 +122,11 @@ public final class LegacyMarkdownPreviewModel {
     }
 
     public static boolean hasMarkdownTable(String rawText) {
-        String[] lines = cleanRawText(rawText).split("\n", -1);
-        for (int i = 0; i + 1 < lines.length; i++) {
-            List<String> header = splitTableRow(lines[i]);
-            if (header.size() >= 1 && hasUnescapedTablePipe(lines[i]) && parseTableAlignments(lines[i + 1], header.size()) != null) return true;
+        String[] rawLines = cleanRawText(rawText).split("\n", -1);
+        ArrayList<String> lines = new ArrayList<>();
+        for (String line : rawLines) lines.add(line == null ? "" : line);
+        for (int i = 0; i < lines.size(); i++) {
+            if (findMarkdownTableBlock(lines, i, lines.size()) != null) return true;
         }
         return false;
     }
@@ -384,7 +386,13 @@ public final class LegacyMarkdownPreviewModel {
 
     private static String repairLooseMarkdownTablesInHtmlFragment(String html) {
         if (html == null || html.isEmpty() || !containsTablePipeChar(html)) return html == null ? "" : html;
-        Matcher m = LOOSE_HTML_PARAGRAPH.matcher(html);
+        String repaired = repairLooseMarkdownTablesInsideParagraphs(html);
+        repaired = repairLooseMarkdownTablesAcrossParagraphs(repaired);
+        return repaired;
+    }
+
+    private static String repairLooseMarkdownTablesInsideParagraphs(String html) {
+        Matcher m = LOOSE_HTML_PARAGRAPH.matcher(html == null ? "" : html);
         StringBuffer sb = new StringBuffer();
         boolean changed = false;
         while (m.find()) {
@@ -396,6 +404,35 @@ public final class LegacyMarkdownPreviewModel {
         }
         m.appendTail(sb);
         return changed ? sb.toString() : html;
+    }
+
+    private static String repairLooseMarkdownTablesAcrossParagraphs(String html) {
+        Matcher m = LOOSE_HTML_PARAGRAPH_RUN.matcher(html == null ? "" : html);
+        StringBuffer sb = new StringBuffer();
+        boolean changed = false;
+        while (m.find()) {
+            String run = m.group(0) == null ? "" : m.group(0);
+            String replacement = looseMarkdownTablesFromParagraphRun(run);
+            if (replacement == null) replacement = run;
+            else changed = true;
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return changed ? sb.toString() : html;
+    }
+
+    private static String looseMarkdownTablesFromParagraphRun(String run) {
+        if (run == null || !containsTablePipeChar(run)) return null;
+        Matcher m = LOOSE_HTML_PARAGRAPH.matcher(run);
+        StringBuilder body = new StringBuilder(run.length());
+        boolean any = false;
+        while (m.find()) {
+            if (body.length() > 0) body.append('\n');
+            body.append(m.group(1) == null ? "" : normalizeLooseHtmlParagraph(m.group(1)));
+            any = true;
+        }
+        if (!any) return null;
+        return looseMarkdownTablesFromParagraphBody(body.toString());
     }
 
     private static String looseMarkdownTablesFromParagraphBody(String body) {
@@ -450,11 +487,20 @@ public final class LegacyMarkdownPreviewModel {
     }
 
     private static LooseHtmlTableBlock parseLooseHtmlTableAt(String[] lines, int index) {
-        if (lines == null || index < 0 || index + 1 >= lines.length) return null;
-        String headerLine = lines[index] == null ? "" : lines[index];
+        if (lines == null || index < 0 || index >= lines.length) return null;
+        int headerIndex = index;
+        if (!isPlausibleLooseHtmlTableHeaderLine(lines[headerIndex])) {
+            if (!isIgnorableLooseHtmlTableFillerLine(lines[headerIndex])) return null;
+            while (headerIndex < lines.length && isIgnorableLooseHtmlTableFillerLine(lines[headerIndex])) headerIndex++;
+            if (headerIndex >= lines.length || !isPlausibleLooseHtmlTableHeaderLine(lines[headerIndex])) return null;
+        }
+        String headerLine = lines[headerIndex] == null ? "" : lines[headerIndex];
         List<String> header = splitLooseHtmlTableRow(headerLine);
-        if (header.size() < 1 || !hasLooseHtmlTablePipe(headerLine)) return null;
-        List<String> align = parseLooseHtmlTableAlignments(lines[index + 1], header.size());
+
+        int separatorIndex = headerIndex + 1;
+        while (separatorIndex < lines.length && isIgnorableLooseHtmlTableFillerLine(lines[separatorIndex])) separatorIndex++;
+        if (separatorIndex >= lines.length) return null;
+        List<String> align = parseLooseHtmlTableAlignments(lines[separatorIndex], header.size());
         if (align == null) return null;
 
         int cols = Math.max(header.size(), align.size());
@@ -468,11 +514,22 @@ public final class LegacyMarkdownPreviewModel {
         }
         html.append("</tr></thead><tbody>");
 
-        int j = index + 2;
+        int j = separatorIndex + 1;
+        int endIndex = separatorIndex;
         while (j < lines.length) {
             String line = lines[j] == null ? "" : lines[j];
-            if (isBlank(stripHtmlTagsForMarkdownSyntax(line)) || !hasLooseHtmlTablePipe(line)) break;
-            if (parseLooseHtmlTableAlignments(line, cols) != null) break;
+            if (isIgnorableLooseHtmlTableFillerLine(line)) {
+                int next = j + 1;
+                while (next < lines.length && isIgnorableLooseHtmlTableFillerLine(lines[next])) next++;
+                if (next < lines.length && startsLooseHtmlTableAt(lines, next)) break;
+                if (next < lines.length && isPlausibleLooseHtmlTableBodyLine(lines[next], cols)) {
+                    j = next;
+                    continue;
+                }
+                break;
+            }
+            if (startsLooseHtmlTableAt(lines, j)) break;
+            if (!isPlausibleLooseHtmlTableBodyLine(line, cols)) break;
             List<String> row = splitLooseHtmlTableRow(line);
             html.append("<tr>");
             for (int c = 0; c < cols; c++) {
@@ -482,10 +539,51 @@ public final class LegacyMarkdownPreviewModel {
                         .append("</td>");
             }
             html.append("</tr>");
+            endIndex = j;
             j++;
         }
         html.append("</tbody></table>");
-        return new LooseHtmlTableBlock(html.toString(), j - 1);
+        return new LooseHtmlTableBlock(html.toString(), endIndex);
+    }
+
+    private static boolean startsLooseHtmlTableAt(String[] lines, int index) {
+        if (lines == null || index < 0 || index >= lines.length) return false;
+        if (!isPlausibleLooseHtmlTableHeaderLine(lines[index])) return false;
+        int separator = index + 1;
+        while (separator < lines.length && isIgnorableLooseHtmlTableFillerLine(lines[separator])) separator++;
+        if (separator >= lines.length) return false;
+        return parseLooseHtmlTableAlignments(lines[separator], splitLooseHtmlTableRow(lines[index]).size()) != null;
+    }
+
+    private static boolean isPlausibleLooseHtmlTableHeaderLine(String line) {
+        if (line == null || isIgnorableLooseHtmlTableFillerLine(line) || !hasLooseHtmlTablePipe(line)) return false;
+        List<String> cells = splitLooseHtmlTableRow(line);
+        if (cells.size() < 1) return false;
+        for (String cell : cells) if (!trimMarkdownSyntax(stripHtmlTagsForMarkdownSyntax(cell)).isEmpty()) return true;
+        return false;
+    }
+
+    private static boolean isPlausibleLooseHtmlTableBodyLine(String line, int columns) {
+        if (line == null || isIgnorableLooseHtmlTableFillerLine(line) || !hasLooseHtmlTablePipe(line)) return false;
+        return parseLooseHtmlTableAlignments(line, Math.max(1, columns)) == null;
+    }
+
+    private static boolean isIgnorableLooseHtmlTableFillerLine(String line) {
+        String syntax = stripHtmlTagsForMarkdownSyntax(line == null ? "" : line);
+        if (isBlank(syntax)) return true;
+        String s = trimMarkdownSyntax(syntax);
+        if (s.isEmpty()) return true;
+        boolean sawPipe = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (isTablePipeChar(c)) sawPipe = true;
+            else if (isMarkdownBlankChar(c)) {
+                // ignore spacing around standalone pipe markers
+            } else {
+                return false;
+            }
+        }
+        return sawPipe;
     }
 
     private static List<String> parseLooseHtmlTableAlignments(String separatorLine, int minColumns) {
@@ -999,9 +1097,88 @@ public final class LegacyMarkdownPreviewModel {
     }
 
     private static boolean isTableStart(List<String> lines, int i) {
-        if (lines == null || i < 0 || i + 1 >= lines.size()) return false;
-        List<String> header = splitTableRow(lines.get(i));
-        return header.size() >= 1 && hasUnescapedTablePipe(lines.get(i)) && parseTableAlignments(lines.get(i + 1), header.size()) != null;
+        return findMarkdownTableBlock(lines, i, lines == null ? 0 : lines.size()) != null;
+    }
+
+    private static MarkdownTableBlock findMarkdownTableBlock(List<String> lines, int i, int end) {
+        if (lines == null || i < 0 || i >= end || i >= lines.size()) return null;
+        int limit = Math.min(end, lines.size());
+        int headerIndex = i;
+        if (!isPlausibleMarkdownTableHeaderLine(lines.get(headerIndex))) {
+            if (!isIgnorableMarkdownTableFillerLine(lines.get(headerIndex))) return null;
+            while (headerIndex < limit && isIgnorableMarkdownTableFillerLine(lines.get(headerIndex))) headerIndex++;
+            if (headerIndex >= limit || !isPlausibleMarkdownTableHeaderLine(lines.get(headerIndex))) return null;
+        }
+
+        List<String> header = splitTableRow(lines.get(headerIndex));
+        int separatorIndex = headerIndex + 1;
+        while (separatorIndex < limit && isIgnorableMarkdownTableFillerLine(lines.get(separatorIndex))) separatorIndex++;
+        if (separatorIndex >= limit) return null;
+
+        List<String> align = parseTableAlignments(lines.get(separatorIndex), header.size());
+        if (align == null) return null;
+
+        int cols = Math.max(header.size(), align.size());
+        int j = separatorIndex + 1;
+        int endIndex = separatorIndex;
+        while (j < limit) {
+            String line = lines.get(j);
+            if (isIgnorableMarkdownTableFillerLine(line)) {
+                int next = j + 1;
+                while (next < limit && isIgnorableMarkdownTableFillerLine(lines.get(next))) next++;
+                if (next < limit && startsMarkdownTableAt(lines, next, limit)) break;
+                if (next < limit && isPlausibleMarkdownTableBodyLine(lines.get(next), cols)) {
+                    j = next;
+                    continue;
+                }
+                break;
+            }
+            if (startsMarkdownTableAt(lines, j, limit)) break;
+            if (!isPlausibleMarkdownTableBodyLine(line, cols)) break;
+            endIndex = j;
+            j++;
+        }
+        return new MarkdownTableBlock(headerIndex, separatorIndex, endIndex, header, align);
+    }
+
+    private static boolean startsMarkdownTableAt(List<String> lines, int index, int end) {
+        if (lines == null || index < 0 || index >= end || index >= lines.size()) return false;
+        if (!isPlausibleMarkdownTableHeaderLine(lines.get(index))) return false;
+        int limit = Math.min(end, lines.size());
+        int separator = index + 1;
+        while (separator < limit && isIgnorableMarkdownTableFillerLine(lines.get(separator))) separator++;
+        if (separator >= limit) return false;
+        return parseTableAlignments(lines.get(separator), splitTableRow(lines.get(index)).size()) != null;
+    }
+
+    private static boolean isPlausibleMarkdownTableHeaderLine(String line) {
+        if (line == null || isIgnorableMarkdownTableFillerLine(line) || !hasUnescapedTablePipe(line)) return false;
+        List<String> cells = splitTableRow(line);
+        if (cells.size() < 1) return false;
+        for (String cell : cells) if (!trimMarkdownSyntax(cell).isEmpty()) return true;
+        return false;
+    }
+
+    private static boolean isPlausibleMarkdownTableBodyLine(String line, int columns) {
+        if (line == null || isIgnorableMarkdownTableFillerLine(line) || !hasUnescapedTablePipe(line)) return false;
+        return parseTableAlignments(line, Math.max(1, columns)) == null;
+    }
+
+    private static boolean isIgnorableMarkdownTableFillerLine(String line) {
+        if (isBlank(line)) return true;
+        String s = trimMarkdownSyntax(line);
+        if (s.isEmpty()) return true;
+        boolean sawPipe = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (isTablePipeChar(c)) sawPipe = true;
+            else if (isMarkdownBlankChar(c)) {
+                // ignore spacing around standalone pipe markers
+            } else {
+                return false;
+            }
+        }
+        return sawPipe;
     }
 
     private static List<String> splitTableRow(String line) {
@@ -1539,8 +1716,10 @@ public final class LegacyMarkdownPreviewModel {
         }
 
         private int renderTable(StringBuilder out, List<String> src, int i, int end) {
-            List<String> header = splitTableRow(src.get(i));
-            List<String> align = parseTableAlignments(src.get(i + 1), header.size());
+            MarkdownTableBlock table = findMarkdownTableBlock(src, i, end);
+            if (table == null) return renderParagraph(out, src, i, end);
+            List<String> header = table.header;
+            List<String> align = table.align;
             int cols = Math.max(header.size(), align == null ? 0 : align.size());
             out.append("<table><thead><tr>");
             for (int c = 0; c < cols; c++) {
@@ -1548,10 +1727,15 @@ public final class LegacyMarkdownPreviewModel {
                 out.append("<th style=\"text-align:").append(a).append("\">").append(renderInline(c < header.size() ? header.get(c) : "")).append("</th>");
             }
             out.append("</tr></thead><tbody>");
-            int j = i + 2;
-            while (j < end && !isBlank(src.get(j)) && hasUnescapedTablePipe(src.get(j))) {
-                if (parseTableAlignments(src.get(j), cols) != null) break;
-                List<String> row = splitTableRow(src.get(j));
+            int j = table.separatorIndex + 1;
+            while (j <= table.endIndex && j < end) {
+                String line = src.get(j);
+                if (isIgnorableMarkdownTableFillerLine(line)) {
+                    j++;
+                    continue;
+                }
+                if (!isPlausibleMarkdownTableBodyLine(line, cols)) break;
+                List<String> row = splitTableRow(line);
                 out.append("<tr>");
                 for (int c = 0; c < cols; c++) {
                     String a = align != null && c < align.size() ? align.get(c) : "left";
@@ -1561,7 +1745,7 @@ public final class LegacyMarkdownPreviewModel {
                 j++;
             }
             out.append("</tbody></table>");
-            return j;
+            return table.endIndex + 1;
         }
 
         private int renderBlockquote(StringBuilder out, List<String> src, int i, int end) {
@@ -2334,6 +2518,21 @@ public final class LegacyMarkdownPreviewModel {
         final String prefixHtml;
         final String body;
         PreprocessedMarkdown(String prefixHtml, String body) { this.prefixHtml = prefixHtml == null ? "" : prefixHtml; this.body = body == null ? "" : body; }
+    }
+
+    private static final class MarkdownTableBlock {
+        final int headerIndex;
+        final int separatorIndex;
+        final int endIndex;
+        final List<String> header;
+        final List<String> align;
+        MarkdownTableBlock(int headerIndex, int separatorIndex, int endIndex, List<String> header, List<String> align) {
+            this.headerIndex = headerIndex;
+            this.separatorIndex = separatorIndex;
+            this.endIndex = endIndex;
+            this.header = header == null ? new ArrayList<String>() : header;
+            this.align = align == null ? new ArrayList<String>() : align;
+        }
     }
 
     private static final class LooseHtmlTableBlock {

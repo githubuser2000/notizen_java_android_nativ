@@ -38,7 +38,7 @@ esac
 
 echo "Installiere exakt diese APK: $APK"
 echo "Wichtig: Wenn der Android-Paketinstaller erscheint, dort Aktualisieren/Installieren bestätigen."
-echo "Erwarteter APK-Build: md-table-runtime-verify-v119 / NotizenJavaAndroidNativ-v119-debug.apk"
+echo "Erwarteter APK-Build: md-loose-table-runtime-verify-v120 / NotizenJavaAndroidNativ-v120-debug.apk"
 
 if command -v termux-open >/dev/null 2>&1; then
   termux-open "$APK"
