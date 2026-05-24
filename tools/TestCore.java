@@ -2618,8 +2618,10 @@ public final class TestCore {
                     || !bridgeText.contains("AlertsExtension.create()")
                     || !bridgeText.contains("TaskListItemsExtension.create()")
                     || !bridgeText.contains("engineName()")
+                    || !bridgeText.contains("--health-check")
+                    || !bridgeText.contains("A &amp; B")
                     || !bridgeText.contains("commonmark-java 0.28.0/GFM")) {
-                throw new AssertionError("markdown CommonMark bridge missing direct renderer wiring");
+                throw new AssertionError("markdown CommonMark bridge missing direct renderer wiring or smoke test");
             }
         }
 
@@ -2634,8 +2636,23 @@ public final class TestCore {
                     || !script.contains("COMMONMARK_JARS")
                     || !script.contains("CommonmarkMarkdownRenderer.java")
                     || !script.contains("classes*.dex")
-                    || !script.contains("PROGRAM_FILES+=(\"${COMMONMARK_JARS[@]}\")")) {
-                throw new AssertionError("markdown extended Termux/manual CommonMark packaging missing");
+                    || !script.contains("PROGRAM_FILES+=(\"${COMMONMARK_JARS[@]}\")")
+                    || !script.contains("org/commonmark/internal/util/entities.txt")
+                    || !script.contains("CommonMark-Java-Ressourcen in APK einfügen")
+                    || !script.contains("CommonMark JVM smoke-test")
+                    || !script.contains("verify_commonmark_apk_payload")) {
+                throw new AssertionError("markdown extended Termux/manual CommonMark packaging missing runtime resources or verification");
+            }
+        }
+
+        File termuxInstall = new File("tools/notizen-install-apk-termux.sh");
+        if (!termuxInstall.isFile()) termuxInstall = new File("../tools/notizen-install-apk-termux.sh");
+        if (termuxInstall.isFile()) {
+            String installScript = readUtf8File(termuxInstall);
+            if (!installScript.contains("Installiere exakt diese APK")
+                    || !installScript.contains("find_latest_apk")
+                    || !installScript.contains("termux-open")) {
+                throw new AssertionError("Termux local APK installer does not pin the just-built APK");
             }
         }
 

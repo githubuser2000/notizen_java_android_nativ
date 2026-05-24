@@ -206,6 +206,11 @@ cat > "$PROJECT/termux-install-apk.sh" <<'EOF_INSTALL'
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODERN_INSTALLER="$ROOT/tools/notizen-install-apk-termux.sh"
+
+if [ -x "$MODERN_INSTALLER" ]; then
+  exec bash "$MODERN_INSTALLER" "$ROOT" "$@"
+fi
 
 find_latest_apk() {
   find "$ROOT/build/termux-apk" -type f -name '*.apk' \

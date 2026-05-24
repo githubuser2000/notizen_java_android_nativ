@@ -51,13 +51,23 @@ public final class CommonmarkMarkdownRenderer {
     }
 
     public static String healthCheck() {
-        String html = render("| A | B |\n|---|---|\n| 1 | 2 |\n\n- [x] Task\n\n~~strike~~\n\n> [!NOTE]\n> Hinweis");
+        String html = render("A &amp; B\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n- [x] Task\n\n~~strike~~\n\n> [!NOTE]\n> Hinweis");
         String lower = html.toLowerCase();
         boolean strike = html.contains("<s>") || html.contains("<del>");
-        if (!html.contains("<table") || !lower.contains("checkbox") || !strike || !lower.contains("alert")) {
+        boolean entityDecodedAndEscapedAgain = html.contains("A &amp; B");
+        if (!entityDecodedAndEscapedAgain || !html.contains("<table") || !lower.contains("checkbox") || !strike || !lower.contains("alert")) {
             throw new IllegalStateException("CommonMark/GFM health check failed: " + html);
         }
         return ENGINE_NAME;
+    }
+
+    public static void main(String[] args) {
+        if (args != null && args.length > 0 && "--health-check".equals(args[0])) {
+            System.out.print(healthCheck());
+            return;
+        }
+        String markdown = args == null || args.length == 0 ? "" : args[0];
+        System.out.print(render(markdown));
     }
 
     private static List<Extension> buildExtensions() {

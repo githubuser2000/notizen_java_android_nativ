@@ -22,6 +22,9 @@ ZIPALIGN="${ZIPALIGN:-$(command -v zipalign || true)}"
 JAVAC="${JAVAC:-javac}"
 JAVAC_RELEASE="${JAVAC_RELEASE:-17}"
 ZIP="${ZIP:-zip}"
+UNZIP="${UNZIP:-$(command -v unzip || true)}"
+JAR="${JAR:-jar}"
+JAVA="${JAVA:-java}"
 CURL="${CURL:-$(command -v curl || true)}"
 WGET="${WGET:-$(command -v wget || true)}"
 COMMONMARK_VERSION="${COMMONMARK_VERSION:-0.28.0}"
@@ -44,6 +47,8 @@ COMMONMARK_COORDS=(
   "org.commonmark:commonmark-ext-yaml-front-matter:$COMMONMARK_VERSION"
 )
 COMMONMARK_JARS=()
+COMMONMARK_RESOURCE_COUNT=0
+COMMONMARK_REQUIRED_RESOURCE="org/commonmark/internal/util/entities.txt"
 JAVAC_LANG_ARGS=()
 KEYSTORE="${KEYSTORE:-$HOME/.android/debug.keystore}"
 KEY_ALIAS="${KEY_ALIAS:-androiddebugkey}"
@@ -107,6 +112,86 @@ join_by_colon() {
   printf '%s' "$joined"
 }
 
+extract_commonmark_java_resources() {
+  COMMONMARK_RESOURCE_COUNT=0
+  JAVA_RES_DIR="$BUILD_DIR/java-res"
+  rm -rf "$JAVA_RES_DIR"
+  mkdir -p "$JAVA_RES_DIR"
+  if [ "${#COMMONMARK_JARS[@]}" -eq 0 ]; then
+    return
+  fi
+
+  local jar entry target
+  for jar in "${COMMONMARK_JARS[@]}"; do
+    while IFS= read -r entry; do
+      case "$entry" in
+        ""|*/|*.class|META-INF/*) continue ;;
+      esac
+      # D8 converts classes only. CommonMark also needs package resources at
+      # runtime, especially org/commonmark/internal/util/entities.txt for HTML
+      # entity handling. Put runtime package resources into the APK root so
+      # Class.getResourceAsStream(...) can find them on Android.
+      case "$entry" in
+        org/*) ;;
+        *) continue ;;
+      esac
+      target="$JAVA_RES_DIR/$entry"
+      mkdir -p "$(dirname "$target")"
+      "$UNZIP" -p "$jar" "$entry" > "$target"
+      COMMONMARK_RESOURCE_COUNT=$((COMMONMARK_RESOURCE_COUNT + 1))
+    done < <("$JAR" tf "$jar")
+  done
+
+  if [ ! -s "$JAVA_RES_DIR/$COMMONMARK_REQUIRED_RESOURCE" ]; then
+    echo "Fehlt CommonMark-Runtime-Ressource: $COMMONMARK_REQUIRED_RESOURCE" >&2
+    echo "Ohne diese Datei lädt commonmark-java auf Android nicht zuverlässig und die App fällt in den Legacy-Fallback." >&2
+    exit 1
+  fi
+}
+
+add_commonmark_java_resources_to_apk() {
+  local apk="$1"
+  if [ "${#COMMONMARK_JARS[@]}" -eq 0 ] || [ "${COMMONMARK_RESOURCE_COUNT:-0}" -eq 0 ]; then
+    return
+  fi
+  if [ ! -d "$JAVA_RES_DIR" ]; then
+    echo "CommonMark-Ressourcenordner fehlt: $JAVA_RES_DIR" >&2
+    exit 1
+  fi
+  ( cd "$JAVA_RES_DIR" && find . -type f -print | sed 's#^\./##' | "$ZIP" -q -u "$apk" -@ )
+}
+
+verify_commonmark_apk_payload() {
+  local apk="$1"
+  if [ "${#COMMONMARK_JARS[@]}" -eq 0 ]; then
+    return
+  fi
+  if ! "$UNZIP" -l "$apk" "$COMMONMARK_REQUIRED_RESOURCE" >/dev/null 2>&1; then
+    echo "APK enthält die notwendige CommonMark-Runtime-Ressource nicht: $COMMONMARK_REQUIRED_RESOURCE" >&2
+    echo "APK: $apk" >&2
+    exit 1
+  fi
+  if ! "$UNZIP" -l "$apk" 'classes*.dex' >/dev/null 2>&1; then
+    echo "APK enthält keine DEX-Dateien." >&2
+    echo "APK: $apk" >&2
+    exit 1
+  fi
+}
+
+run_commonmark_jvm_smoke_test() {
+  if [ "${#COMMONMARK_JARS[@]}" -eq 0 ]; then
+    return
+  fi
+  local cp output
+  cp="$BUILD_DIR/classes:$COMMONMARK_CP"
+  if ! output="$("$JAVA" -classpath "$cp" de.notizen.android.markdown.CommonmarkMarkdownRenderer --health-check 2>&1)"; then
+    echo "CommonMark JVM smoke-test fehlgeschlagen:" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+  printf 'CommonMark JVM smoke-test: %s\n' "$output"
+}
+
 prepare_manifest_for_aapt2() {
   local source_manifest="$1"
   local target_manifest="$2"
@@ -143,12 +228,16 @@ need_exec "$APKSIGNER" "apksigner"
 need_exec "$ZIPALIGN" "zipalign"
 need_cmd "$JAVAC"
 need_cmd "$ZIP"
+need_cmd "$UNZIP"
+need_cmd "$JAR"
+need_cmd "$JAVA"
 need_cmd keytool
 build_javac_language_args
 ensure_commonmark_deps
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"/res "$BUILD_DIR"/gen "$BUILD_DIR"/classes "$BUILD_DIR"/dex "$BUILD_DIR"/out
+extract_commonmark_java_resources
 
 MANIFEST="$APP_DIR/AndroidManifest.xml"
 AAPT2_MANIFEST="$BUILD_DIR/AndroidManifest.aapt2.xml"
@@ -172,6 +261,8 @@ printf 'apksigner: %s\n' "$APKSIGNER"
 printf 'zipalign: %s\n' "$ZIPALIGN"
 if [ "${#COMMONMARK_JARS[@]}" -gt 0 ]; then
   printf 'CommonMark/GFM jars: %s\n' "${#COMMONMARK_JARS[@]}"
+  printf 'CommonMark Java resources: %s\n' "${COMMONMARK_RESOURCE_COUNT:-0}"
+  printf 'CommonMark required resource: %s\n' "$COMMONMARK_REQUIRED_RESOURCE"
 fi
 printf '\n'
 
@@ -208,6 +299,7 @@ if [ -n "$COMMONMARK_CP" ]; then JAVAC_CP="$JAVAC_CP:$COMMONMARK_CP"; fi
   -sourcepath "$JAVA_SRC:$BUILD_DIR/gen" \
   -d "$BUILD_DIR/classes" \
   @"$BUILD_DIR/sources.txt"
+run_commonmark_jvm_smoke_test
 
 printf '\n==> .class nach DEX konvertieren\n'
 find "$BUILD_DIR/classes" -name '*.class' -print > "$BUILD_DIR/classes.txt"
@@ -219,6 +311,13 @@ if [ "${#COMMONMARK_JARS[@]}" -gt 0 ]; then PROGRAM_FILES+=("${COMMONMARK_JARS[@
 printf '\n==> DEX-Dateien in APK einfügen\n'
 cp "$UNALIGNED_APK" "$UNSIGNED_APK"
 ( cd "$BUILD_DIR/dex" && "$ZIP" -q -u "$UNSIGNED_APK" classes*.dex )
+
+if [ "${COMMONMARK_RESOURCE_COUNT:-0}" -gt 0 ]; then
+  printf '\n==> CommonMark-Java-Ressourcen in APK einfügen\n'
+  add_commonmark_java_resources_to_apk "$UNSIGNED_APK"
+  verify_commonmark_apk_payload "$UNSIGNED_APK"
+  printf 'CommonMark APK-Ressource geprüft: %s\n' "$COMMONMARK_REQUIRED_RESOURCE"
+fi
 
 printf '\n==> zipalign\n'
 "$ZIPALIGN" -f 4 "$UNSIGNED_APK" "$ALIGNED_APK"
@@ -248,5 +347,10 @@ printf '\n==> APK signieren\n'
 
 printf '\n==> Signatur prüfen\n'
 "$APKSIGNER" verify "$SIGNED_APK"
+verify_commonmark_apk_payload "$SIGNED_APK"
 
 printf '\nFertig: %s\n' "$SIGNED_APK"
+printf 'Installieren genau diese APK:\n  termux-open "%s"\n' "$SIGNED_APK"
+if [ -x "$PROJECT_DIR/notizen-install-apk" ]; then
+  printf 'Oder lokal:\n  "%s/notizen-install-apk" "%s"\n' "$PROJECT_DIR" "$SIGNED_APK"
+fi
